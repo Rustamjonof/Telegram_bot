@@ -1,0 +1,998 @@
+"""
+Start Daily Bot - Admin Panel
+Faqat @Rustamjonoff1 uchun
+"""
+
+import json
+import os
+import asyncio
+from datetime import datetime
+from aiogram import Bot, Dispatcher, types, F
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+DATA_FILE     = "user_data.json"
+SETTINGS_FILE = "bot_settings.json"
+ADMIN_ID      = 5236920689
+
+LANGUAGES = {
+    "uz": "🇺🇿 O'zbek", "en": "🇬🇧 English", "ru": "🇷🇺 Русский",
+    "ar": "🇸🇦 العربية", "tr": "🇹🇷 Türkçe", "es": "🇪🇸 Español", "hi": "🇮🇳 हिन्दी"
+}
+
+def load_data():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+def save_data(data):
+    with open(DATA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def load_settings():
+    if os.path.exists(SETTINGS_FILE):
+        with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+def save_settings(s):
+    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(s, f, ensure_ascii=False, indent=2)
+
+def update_user(uid, updates):
+    data = load_data()
+    key  = str(uid)
+    if key in data:
+        data[key].update(updates)
+        save_data(data)
+
+# ============================================================
+# KLAVIATURALAR
+# ============================================================
+def admin_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="📊 Statistika",              callback_data="adm_stats")],
+        [InlineKeyboardButton(text="📢 Hammaga xabar",           callback_data="adm_broadcast")],
+        [InlineKeyboardButton(text="🎯 Reklama (til bo'yicha)",  callback_data="adm_ad")],
+        [InlineKeyboardButton(text="📡 Majburiy obuna",          callback_data="adm_channels")],
+        [InlineKeyboardButton(text="💬 Motivatsion iqtibos",     callback_data="adm_quotes")],
+        [InlineKeyboardButton(text="✏️ Xush kelibsiz xabari",    callback_data="adm_welcome")],
+        [InlineKeyboardButton(text="📋 Ommaviy oferta",          callback_data="adm_oferta")],
+        [InlineKeyboardButton(text="☕ Donat matni",             callback_data="adm_donation")],
+        [InlineKeyboardButton(text="📝 Bo'lim matnlari",         callback_data="adm_sectexts")],
+        [InlineKeyboardButton(text="🚫 Taqiqlangan so'zlar",     callback_data="adm_banned")],
+        [InlineKeyboardButton(text="👥 Foydalanuvchilar",        callback_data="adm_users")],
+        [InlineKeyboardButton(text="⚠️ Ogohlantirish yuborish",  callback_data="adm_warn")],
+        [InlineKeyboardButton(text="🚫 Bloklash",                callback_data="adm_block")],
+        [InlineKeyboardButton(text="✅ Blokdan chiqarish",       callback_data="adm_unblock")],
+    ])
+
+def back_kb():
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text="🔙 Admin panel", callback_data="adm_back")]
+    ])
+
+def lang_select_kb(prefix):
+    btns = [[InlineKeyboardButton(text=name, callback_data=f"{prefix}_{code}")]
+            for code, name in LANGUAGES.items()]
+    btns.append([InlineKeyboardButton(text="🌍 Hammaga", callback_data=f"{prefix}_all")])
+    btns.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data="adm_back")])
+    return InlineKeyboardMarkup(inline_keyboard=btns)
+
+# ============================================================
+# FSM
+# ============================================================
+class AdminS(StatesGroup):
+    broadcast     = State()
+    ad_text       = State()
+    ad_schedule   = State()
+    add_channel   = State()
+    add_quote     = State()
+    quote_time    = State()
+    edit_welcome  = State()
+    edit_oferta   = State()
+    edit_donation = State()
+    add_banned    = State()
+    warn_user     = State()
+    block_user    = State()
+    unblock_user  = State()
+    edit_sectext  = State()
+
+# ============================================================
+# GLOBAL BOT (main.py dan o'rnatiladi)
+# ============================================================
+_bot = None
+
+def set_bot(b: Bot):
+    global _bot
+    _bot = b
+
+# ============================================================
+# ADMIN PANEL YUBORISH
+# ============================================================
+async def send_admin_panel(message: types.Message, bot: Bot):
+    set_bot(bot)
+    await message.answer("🔐 Admin Panel — Start Daily", reply_markup=admin_kb())
+
+# ============================================================
+# HANDLERLARNI RO'YXATDAN O'TKAZISH
+# ============================================================
+def register_admin_handlers(dp: Dispatcher, bot: Bot):
+    set_bot(bot)
+
+    @dp.callback_query(F.data.startswith("adm_") & ~F.data.startswith("admin_"))
+    async def cb_admin(callback: types.CallbackQuery, state: FSMContext):
+        print(f"DEBUG cb_admin: {callback.data}")
+        print(f"cb_admin called: {callback.data}")  # DEBUG
+        if callback.from_user.id != ADMIN_ID:
+            return
+        action = callback.data[4:]
+        data     = load_data()
+        settings = load_settings()
+        now      = datetime.now()
+
+        # ---- ORQAGA ----
+        if action == "back":
+            await callback.message.edit_text(
+                "🔐 Admin Panel — Start Daily",
+                reply_markup=admin_kb()
+            )
+
+        # ---- STATISTIKA ----
+        elif action == "stats":
+            total     = len(data)
+            active    = sum(1 for u in data.values() if not u.get("blocked"))
+            blocked   = total - active
+            this_month = now.strftime("%Y-%m")
+            new_month  = sum(1 for u in data.values() if u.get("joined","").startswith(this_month))
+            today_str  = now.strftime("%Y-%m-%d")
+            today_act  = sum(1 for u in data.values() if u.get("last_active","") == today_str)
+            langs = {}
+            for u in data.values():
+                l = u.get("lang","en")
+                langs[l] = langs.get(l, 0) + 1
+            lang_text = "\n".join(
+                f"  {LANGUAGES.get(l,l)}: {c}"
+                for l,c in sorted(langs.items(), key=lambda x: -x[1])
+            )
+            await callback.message.edit_text(
+                f"📊 Statistika\n\n"
+                f"👥 Jami: {total}\n"
+                f"✅ Faol: {active}\n"
+                f"🚫 Bloklangan: {blocked}\n"
+                f"📅 Bugun faol: {today_act}\n"
+                f"🆕 Bu oy: {new_month}\n\n"
+                f"🌍 Tillar:\n{lang_text}",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🏙 Shaharlar", callback_data="adm_cities")],
+                    [InlineKeyboardButton(text="🚫 Bloklangan ro'yxat", callback_data="adm_blocked_list")],
+                    [InlineKeyboardButton(text="🔙 Orqaga", callback_data="adm_back")],
+                ])
+            )
+
+        elif action == "cities":
+            cities = {}
+            for u in data.values():
+                c = u.get("city", "")
+                if c: cities[c] = cities.get(c, 0) + 1
+            city_text = "\n".join(
+                f"  {c}: {n}" for c,n in sorted(cities.items(), key=lambda x: -x[1])[:15]
+            )
+            await callback.message.edit_text(
+                f"🏙 Top shaharlar\n\n{city_text or 'Ma`lumot yo`q'}",
+                reply_markup=back_kb()
+            )
+
+        elif action == "blocked_list":
+            blocked_users = [(uid,u) for uid,u in data.items() if u.get("blocked")]
+            if not blocked_users:
+                await callback.message.edit_text("Bloklangan foydalanuvchilar yo'q", reply_markup=back_kb())
+                return
+            text = "🚫 Bloklangan foydalanuvchilar:\n\n"
+            for uid,u in blocked_users[:20]:
+                uname = f"@{u.get('username','')}" if u.get("username") else f"ID:{uid}"
+                text += f"• {u.get('name','?')} | {uname} | ID:{uid}\n"
+            await callback.message.edit_text(text, reply_markup=back_kb())
+
+        # ---- HAMMAGA XABAR ----
+        elif action == "broadcast":
+            await state.set_state(AdminS.broadcast)
+            await callback.message.answer(
+                "📢 Hammaga xabar\n\nMatn, rasm yoki video yuboring.\n"
+                "Bu xabar barcha foydalanuvchilarga boradi."
+            )
+
+        # ---- REKLAMA ----
+        elif action == "ad":
+            await callback.message.edit_text(
+                "🎯 Reklama — Tilni tanlang:",
+                reply_markup=lang_select_kb("adm_ad_lang")
+            )
+
+        elif action.startswith("ad_lang_"):
+            lang = action[8:]
+            await state.set_state(AdminS.ad_text)
+            await state.update_data(ad_lang=lang)
+            lang_name = "Hammaga" if lang == "all" else LANGUAGES.get(lang, lang)
+            await callback.message.answer(
+                f"🎯 Reklama: {lang_name}\n\nMatn, rasm yoki video yuboring."
+            )
+
+        # ---- MAJBURIY OBUNA ----
+        elif action == "channels":
+            channels = settings.get("required_channels", [])
+            text = "📡 Majburiy obuna kanallari\n\n"
+            btns = []
+            for i, ch in enumerate(channels):
+                langs = ch.get("langs", [])
+                lang_str = ", ".join(LANGUAGES.get(l,l) for l in langs) if langs else "Hammaga"
+                text += f"{i+1}. {ch['name']} — {lang_str}\n"
+                btns.append([InlineKeyboardButton(
+                    text=f"🗑 {ch['name'][:20]}",
+                    callback_data=f"adm_delch_{i}"
+                )])
+            if not channels:
+                text += "Hozircha yo'q"
+            btns.append([InlineKeyboardButton(text="➕ Kanal qo'shish", callback_data="adm_addchannel")])
+            btns.append([InlineKeyboardButton(text="🗑 Hammasini o'chirish", callback_data="adm_clearchannels")])
+            btns.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data="adm_back")])
+            await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
+
+        elif action == "addchannel":
+            await callback.message.edit_text(
+                "📡 Qaysi til uchun kanal?",
+                reply_markup=lang_select_kb("adm_chlang")
+            )
+
+        elif action.startswith("chlang_"):
+            ch_lang = action[7:]
+            await state.set_state(AdminS.add_channel)
+            await state.update_data(ch_lang=ch_lang)
+            lang_name = "Hammaga" if ch_lang == "all" else LANGUAGES.get(ch_lang, ch_lang)
+            await callback.message.answer(
+                f"📡 Kanal qo'shish: {lang_name}\n\n"
+                "Quyidagi formatda yozing:\n"
+                "@username|Kanal nomi|https://t.me/username"
+            )
+
+        elif action.startswith("delch_"):
+            idx      = int(action[6:])
+            channels = settings.get("required_channels", [])
+            if idx < len(channels):
+                removed = channels.pop(idx)
+                settings["required_channels"] = channels
+                save_settings(settings)
+                await callback.answer(f"O'chirildi: {removed['name']}")
+                await callback.message.edit_text(
+                    "📡 Majburiy obuna kanallari\n\nYangilandi.",
+                    reply_markup=back_kb()
+                )
+
+        elif action == "clearchannels":
+            settings["required_channels"] = []
+            save_settings(settings)
+            await callback.answer("Barcha kanallar o'chirildi")
+
+        # ---- MOTIVATSION IQTIBOS ----
+        elif action == "quotes":
+            quotes = settings.get("motivational_quotes", {})
+            q_time = settings.get("quote_time", "08:00")
+            q_enabled = settings.get("quote_enabled", True)
+            total_q = sum(len(v) for v in quotes.values())
+            await callback.message.edit_text(
+                f"💬 Motivatsion iqtiboslar\n\n"
+                f"Jami: {total_q} ta\n"
+                f"Vaqt: {q_time}\n"
+                f"Holat: {'✅ Yoqilgan' if q_enabled else '❌ O`chirilgan'}",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="➕ Iqtibos qo'shish", callback_data="adm_addquote")],
+                    [InlineKeyboardButton(text="📋 Iqtiboslarni ko'rish", callback_data="adm_listquotes_0")],
+                    [InlineKeyboardButton(text="🗑 Hammasini o'chirish", callback_data="adm_clearquotes")],
+                    [InlineKeyboardButton(text="⏰ Vaqtni o'zgartirish", callback_data="adm_quotetime")],
+                    [InlineKeyboardButton(text="🔄 Yoq/O'chir", callback_data="adm_quotetoggle")],
+                    [InlineKeyboardButton(text="🔙 Orqaga", callback_data="adm_back")],
+                ])
+            )
+
+        elif action == "addquote":
+            await callback.message.edit_text(
+                "💬 Iqtibos uchun til tanlang:",
+                reply_markup=lang_select_kb("adm_qlang")
+            )
+
+        elif action.startswith("qlang_"):
+            q_lang = action[6:]
+            await state.set_state(AdminS.add_quote)
+            await state.update_data(q_lang=q_lang)
+            lang_name = "Hammaga" if q_lang == "all" else LANGUAGES.get(q_lang, q_lang)
+            await callback.message.answer(
+                f"💬 {lang_name} uchun iqtibos yozing:"
+            )
+
+        elif action == "quotetime":
+            await state.set_state(AdminS.quote_time)
+            await callback.message.answer(
+                f"⏰ Joriy vaqt: {settings.get('quote_time','08:00')}\n\n"
+                "Yangi vaqtni kiriting (HH:MM):"
+            )
+
+        elif action == "quotetoggle":
+            settings["quote_enabled"] = not settings.get("quote_enabled", True)
+            save_settings(settings)
+            status = "Yoqildi ✅" if settings["quote_enabled"] else "O'chirildi ❌"
+            await callback.answer(f"Iqtibos: {status}")
+        elif action == "clearquotes":
+            settings["motivational_quotes"] = {l: [] for l in LANGUAGES}
+            save_settings(settings)
+            await callback.answer("✅ Barcha iqtiboslar o'chirildi")
+
+        elif action.startswith("listquotes_"):
+            page = int(action.split("_")[1])
+            quotes = settings.get("motivational_quotes", {})
+            all_quotes = []
+            for lang_code, q_list in quotes.items():
+                for i, q in enumerate(q_list):
+                    all_quotes.append((lang_code, i, q))
+
+            per_page = 5
+            start = page * per_page
+            end = start + per_page
+            page_quotes = all_quotes[start:end]
+
+            if not page_quotes:
+                await callback.answer("Iqtiboslar yo'q!")
+                return
+
+            text = f"📋 Iqtiboslar ({start + 1}-{min(end, len(all_quotes))}/{len(all_quotes)})\n\n"
+            btns = []
+            for lang_code, idx, q in page_quotes:
+                short = q[:30] + "..." if len(q) > 30 else q
+                text += f"[{LANGUAGES.get(lang_code, lang_code)}] {short}\n"
+                btns.append([InlineKeyboardButton(
+                    text=f"🗑 {short[:20]}",
+                    callback_data=f"adm_delquote_{lang_code}_{idx}"
+                )])
+
+            nav = []
+            if page > 0:
+                nav.append(InlineKeyboardButton(text="◀️", callback_data=f"adm_listquotes_{page - 1}"))
+            if end < len(all_quotes):
+                nav.append(InlineKeyboardButton(text="▶️", callback_data=f"adm_listquotes_{page + 1}"))
+            if nav:
+                btns.append(nav)
+            btns.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data="adm_quotes")])
+
+            await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
+
+        elif action.startswith("delquote_"):
+            parts = action.split("_")
+            lang_code = parts[1]
+            idx = int(parts[2])
+            quotes = settings.get("motivational_quotes", {})
+            if lang_code in quotes and idx < len(quotes[lang_code]):
+                removed = quotes[lang_code].pop(idx)
+                settings["motivational_quotes"] = quotes
+                save_settings(settings)
+                await callback.answer(f"✅ O'chirildi: {removed[:20]}")
+                # Ro'yxatni yangilash
+                all_quotes = []
+                for lc, q_list in quotes.items():
+                    for i, q in enumerate(q_list):
+                        all_quotes.append((lc, i, q))
+                if all_quotes:
+                    page_quotes = all_quotes[:5]
+                    text = f"📋 Iqtiboslar\n\n"
+                    btns = []
+                    for lc, i, q in page_quotes:
+                        short = q[:30] + "..." if len(q) > 30 else q
+                        text += f"[{LANGUAGES.get(lc, lc)}] {short}\n"
+                        btns.append([InlineKeyboardButton(
+                            text=f"🗑 {short[:20]}",
+                            callback_data=f"adm_delquote_{lc}_{i}"
+                        )])
+                    btns.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data="adm_quotes")])
+                    await callback.message.edit_text(text, reply_markup=InlineKeyboardMarkup(inline_keyboard=btns))
+                else:
+                    await callback.message.edit_text("Iqtiboslar yo'q", reply_markup=back_kb())
+        # ---- XUSH KELIBSIZ ----
+        elif action == "welcome":
+            await callback.message.edit_text(
+                "✏️ Xush kelibsiz xabari — Tilni tanlang:",
+                reply_markup=lang_select_kb("adm_welang")
+            )
+
+        elif action.startswith("welang_"):
+            we_lang = action[7:]
+            await state.set_state(AdminS.edit_welcome)
+            await state.update_data(edit_lang=we_lang)
+            current = settings.get("welcome_text", {}).get(we_lang, "")
+            lang_name = LANGUAGES.get(we_lang, we_lang)
+            await callback.message.answer(
+                f"✏️ Xush kelibsiz ({lang_name})\n\n"
+                f"Joriy matn:\n{current or '(standart)'}\n\n"
+                "Yangi matnni yozing:"
+            )
+
+        # ---- OFERTA ----
+        elif action == "oferta":
+            await callback.message.edit_text(
+                "📋 Ommaviy oferta — Tilni tanlang:",
+                reply_markup=lang_select_kb("adm_oflang")
+            )
+
+        elif action.startswith("oflang_"):
+            of_lang = action[7:]
+            await state.set_state(AdminS.edit_oferta)
+            await state.update_data(edit_lang=of_lang)
+            lang_name = LANGUAGES.get(of_lang, of_lang)
+            await callback.message.answer(
+                f"📋 Oferta ({lang_name})\n\nMatn, rasm yoki video yuboring:"
+            )
+
+        # ---- DONAT ----
+        elif action == "donation":
+            await callback.message.edit_text(
+                "☕ Donat matni — Tilni tanlang:",
+                reply_markup=lang_select_kb("adm_donlang")
+            )
+
+        elif action.startswith("donlang_"):
+            don_lang = action[8:]
+            await state.set_state(AdminS.edit_donation)
+            await state.update_data(edit_lang=don_lang)
+            dt = settings.get("donation_text", {})
+            current = dt.get(don_lang, "") if isinstance(dt, dict) else ""
+            lang_name = LANGUAGES.get(don_lang, don_lang)
+            await callback.message.answer(
+                f"☕ Donat ({lang_name})\n\n"
+                f"Joriy matn:\n{current or '(bo`sh)'}\n\n"
+                "Yangi matnni yozing:"
+            )
+
+        # ---- BO'LIM MATNLARI ----
+        elif action == "sectexts":
+            sections = [
+                ("💸 Xarajatlar", "expense"),
+                ("📅 Kunlik reja", "plan"),
+                ("⏰ Eslatmalar", "reminder"),
+                ("🌤 Ob-havo", "weather"),
+                ("💱 Valyuta", "currency"),
+                ("🤖 AI Yordamchi", "ai"),
+                ("⚙️ Sozlamalar", "settings"),
+                ("👤 Profil", "profile"),
+                ("👨‍💼 Admin tugmasi", "adminbtn"),
+                ("💎 Standart tarif", "tariff_standard"),
+                ("💎 Premium tarif", "tariff_premium"),
+                ("💰 Balans rekvizit", "balance_requisite"),
+                ("🎁 Referal matn", "referral_text"),
+                ("🤖 AI limit xabari", "ai_limit_msg"),
+                ("💳 3000 so'm xabari", "ai_pay_msg"),
+                ("✅ To'lov tasdiqlash", "payment_confirm"),
+                ("❌ To'lov rad etish", "payment_reject"),
+                ("📖 Referal qanday ishlaydi", "ref_howworks"),
+                ("🖼 AI: Rasm prompt", "ai_prompt_image"),
+                ("📝 AI: Referat prompt", "ai_prompt_referat"),
+                ("📄 AI: Tezis prompt", "ai_prompt_tezis"),
+                ("📰 AI: Maqola prompt", "ai_prompt_article"),
+                ("🗂 AI: Mustaqil prompt", "ai_prompt_mustaqil"),
+                ("🎓 AI: Kurs ishi prompt", "ai_prompt_kurs"),
+                ("💼 AI: Keys prompt", "ai_prompt_keys"),
+                ("📋 AI: Rezyume prompt", "ai_prompt_resume"),
+                ("🗺 AI: Texmap prompt", "ai_prompt_texmap"),
+                ("❓ AI: Quiz prompt", "ai_prompt_quiz"),
+                ("🔠 AI: Krossvord prompt", "ai_prompt_crossword"),
+                ("🌐 AI: Tarjima prompt", "ai_prompt_translate"),
+                ("✍️ AI: Insho prompt", "ai_prompt_essay"),
+                ("🃏 AI: Flesh karta", "ai_prompt_flashcard"),
+                ("📊 AI: Taqdimot", "ai_prompt_present"),
+                ("🔄 AI: Konvert", "ai_prompt_convert"),
+                ("💬 AI: Chat prompt", "ai_prompt_chat"),
+                ("👨‍💼 Admin tugmasi", "adminbtn"),
+                ("🤖 AI menyu matni", "ai_menu_title"),
+                ("💰 Balans sahifasi matni", "balance_page"),
+                ("💳 Balans to'ldirish matni", "balance_topup_text"),
+                ("📨 Kanal to'lov matni", "payment_channel_text"),
+                ("✅ To'lov tasdiqlash matni", "payment_confirm"),
+                ("❌ To'lov rad etish matni", "payment_reject"),
+                ("💸 Xarajatlar tugmasi", "btn_expense"),
+                ("📅 Kunlik reja tugmasi", "btn_plan"),
+                ("⏰ Eslatmalar tugmasi", "btn_reminder"),
+                ("💱 Valyuta tugmasi", "btn_currency"),
+                ("🌤 Ob-havo tugmasi", "btn_weather"),
+                ("🤖 AI Yordamchi tugmasi", "btn_ai"),
+                ("👤 Profil tugmasi", "btn_profile"),
+                ("👨‍💼 Admin tugmasi nomi", "btn_admin"),
+                ("⚙️ Sozlamalar tugmasi", "btn_settings"),
+                ("💎 Tariflar tugmasi", "btn_tariffs"),
+                ("🎁 Referal tugmasi", "btn_referral"),
+                ("💰 Balans tugmasi", "btn_balance"),
+                ("🔙 Orqaga tugmasi", "btn_back"),
+                ("📅 Bugun tugmasi", "btn_today"),
+                ("📆 Hafta tugmasi", "btn_week"),
+                ("🗓 Oy tugmasi", "btn_month"),
+                ("▪ Yil tugmasi", "btn_year"),
+                ("🗑 Tozalash tugmasi", "btn_clear"),
+                ("💱 Konvertatsiya tugmasi", "btn_convert"),
+                ("✏️ Ismni o'zgartirish", "btn_edit_name"),
+                ("📍 Shaharni o'zgartirish", "btn_edit_city"),
+                ("▪ Valyuta shabloni tugmasi", "btn_currency_template"),
+                ("· Standart tarif tugmasi", "btn_tariff_standard"),
+                ("💎 Premium tarif tugmasi", "btn_tariff_premium"),
+                ("📖 Qanday ishlaydi tugmasi", "btn_ref_howworks"),
+                ("💳 Balansni to'ldirish tugmasi", "btn_topup"),
+                # Xarajatlar
+                ("📅 Xarajat: Bugun", "btn_exp_today"),
+                ("📆 Xarajat: Hafta", "btn_exp_week"),
+                ("🗓 Xarajat: Oy", "btn_exp_month"),
+                ("▪ Xarajat: Yil", "btn_exp_year"),
+                ("💱 Xarajat: Konvertatsiya", "btn_exp_convert"),
+                ("🗑 Xarajat: Tozalash", "btn_exp_clear"),
+                # Konvertatsiya
+                ("📅 Konv: Bugun", "btn_conv_today"),
+                ("📆 Konv: Hafta", "btn_conv_week"),
+                ("🗓 Konv: Oy", "btn_conv_month"),
+                ("▪ Konv: Yil", "btn_conv_year"),
+                # AI funksiyalar
+                ("🖼 AI: Rasm yaratish", "btn_ai_image"),
+                ("▪ AI: Taqdimot", "btn_ai_present"),
+                ("📝 AI: Referat", "btn_ai_referat"),
+                ("📄 AI: Tezis", "btn_ai_tezis"),
+                ("📰 AI: Maqola", "btn_ai_article"),
+                ("🗂 AI: Mustaqil ish", "btn_ai_mustaqil"),
+                ("🎓 AI: Kurs ishi", "btn_ai_kurs"),
+                ("💼 AI: Keys", "btn_ai_keys"),
+                ("▪ AI: Rezyume", "btn_ai_resume"),
+                ("🗺 AI: Texmap", "btn_ai_texmap"),
+                ("❓ AI: Quiz/Test", "btn_ai_quiz"),
+                ("🔠 AI: Krossvord", "btn_ai_crossword"),
+                ("🌐 AI: Tarjima", "btn_ai_translate"),
+                ("✍️ AI: Insho", "btn_ai_essay"),
+                ("🃏 AI: Flesh karta", "btn_ai_flashcard"),
+                ("🔄 AI: Fayl formati", "btn_ai_convert"),
+                ("💬 AI: Oddiy chat", "btn_ai_chat"),
+
+            ]
+            btns = [
+                [InlineKeyboardButton(text=name, callback_data=f"adm_sectext_{key}")]
+                for name, key in sections
+            ]
+            btns.append([InlineKeyboardButton(text="🔙 Orqaga", callback_data="adm_back")])
+            await callback.message.edit_text(
+                "📝 Bo'lim matnlari\n\nQaysi bo'lim matnini o'zgartirish?",
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=btns)
+            )
+
+        elif action.startswith("sectext_"):
+            sec_key = action[8:]
+            await callback.message.edit_text(
+                f"📝 {sec_key} — Tilni tanlang:",
+                reply_markup=lang_select_kb(f"adm_secedit_{sec_key}")
+            )
+
+
+        elif action.startswith("secedit_"):
+
+            parts = action[8:].rsplit("_", 1)
+
+            sec_key = parts[0]
+
+            sec_lang = parts[1] if len(parts) > 1 else "en"
+
+            await state.set_state(AdminS.edit_sectext)
+
+            await state.update_data(sec_key=sec_key, edit_lang=sec_lang)
+
+            # Mavjud matnni olish
+
+            custom_sections = settings.get("custom_section_texts", {})
+
+            current = custom_sections.get(sec_key, {}).get(sec_lang, "")
+
+            # Maxsus bo'limlar uchun standart matnni ko'rsatish
+
+            if not current:
+
+                if sec_key == "balance_requisite":
+
+                    current = "Humo: 9860 1234 5678 9012\nUzcard: 8600 1234 5678 9012"
+
+                elif sec_key == "tariff_standard":
+
+                    current = "Standart tarif tavsifi"
+
+                elif sec_key == "tariff_premium":
+
+                    current = "Premium tarif tavsifi"
+
+                else:
+
+                    current = "(standart)"
+
+            lang_name = LANGUAGES.get(sec_lang, sec_lang)
+
+            await callback.message.answer(
+
+                f"📝 {sec_key} | {lang_name}\n\n"
+
+                f"Joriy matn:\n{current}\n\n"
+
+                "Yangi matnni yozing:"
+
+            )
+
+        # ---- TAQIQLANGAN SO'ZLAR ----
+        elif action == "banned":
+            banned = settings.get("banned_words", [])
+            text   = f"🚫 Taqiqlangan so'zlar ({len(banned)} ta)\n\n"
+            text  += "\n".join(f"▪️ {w}" for w in banned[:30]) if banned else "Hozircha yo'q"
+            await callback.message.edit_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="➕ So'z qo'shish", callback_data="adm_addbanned")],
+                    [InlineKeyboardButton(text="🗑 Hammasini o'chirish", callback_data="adm_clearbanned")],
+                    [InlineKeyboardButton(text="🔙 Orqaga", callback_data="adm_back")],
+                ])
+            )
+
+        elif action == "addbanned":
+            await state.set_state(AdminS.add_banned)
+            await callback.message.answer(
+                "🚫 Taqiqlangan so'zlarni yozing\n(har birini yangi qatordan):"
+            )
+
+        elif action == "clearbanned":
+            settings["banned_words"] = []
+            save_settings(settings)
+            await callback.answer("Barcha so'zlar o'chirildi")
+
+        # ---- FOYDALANUVCHILAR ----
+        elif action == "users":
+            today_str = now.strftime("%Y-%m-%d")
+            today_active = [
+                (uid, u) for uid, u in data.items()
+                if u.get("last_active", "") == today_str and not u.get("blocked")
+            ]
+            text = (
+                f"👥 Foydalanuvchilar\n\n"
+                f"Jami: {len(data)}\n"
+                f"Bugun faol: {len(today_active)}\n\n"
+                f"Barcha foydalanuvchilar ID:\n"
+            )
+            for uid, u in list(data.items())[:30]:
+                uname = f"@{u.get('username', '')}" if u.get("username") else "—"
+                status = "🚫" if u.get("blocked") else "✅"
+                text += f"{status} {u.get('name', '?')} | {uname} | ID:{uid}\n"
+            await callback.message.edit_text(
+                text,
+                reply_markup=InlineKeyboardMarkup(inline_keyboard=[
+                    [InlineKeyboardButton(text="🚫 Bloklangan ro'yxat", callback_data="adm_blocked_list")],
+                    [InlineKeyboardButton(text="🔙 Orqaga", callback_data="adm_back")],
+                ])
+            )
+
+        # ---- OGOHLANTIRISH ----
+        elif action == "warn":
+            await state.set_state(AdminS.warn_user)
+            await callback.message.answer(
+                "⚠️ Ogohlantirish yuborish\n\nFoydalanuvchi ID sini kiriting:"
+            )
+
+        # ---- BLOKLASH ----
+        elif action == "block":
+            await state.set_state(AdminS.block_user)
+            await callback.message.answer(
+                "🚫 Bloklash\n\nFoydalanuvchi ID sini kiriting:"
+            )
+
+        # ---- BLOKDAN CHIQARISH ----
+        elif action == "unblock":
+            await state.set_state(AdminS.unblock_user)
+            await callback.message.answer(
+                "✅ Blokdan chiqarish\n\nFoydalanuvchi ID sini kiriting:"
+            )
+
+    # ============================================================
+    # MESSAGE HANDLERLAR
+    # ============================================================
+
+    @dp.message(AdminS.broadcast)
+    async def adm_broadcast(message: types.Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID: return
+        data  = load_data()
+        count = 0
+        fail  = 0
+        for uid in data:
+            if data[uid].get("blocked"): continue
+            try:
+                if message.photo:
+                    await _bot.send_photo(int(uid), message.photo[-1].file_id, caption=message.caption or "")
+                elif message.video:
+                    await _bot.send_video(int(uid), message.video.file_id, caption=message.caption or "")
+                else:
+                    await _bot.send_message(int(uid), message.text)
+                count += 1
+            except:
+                fail += 1
+            await asyncio.sleep(0.05)
+        await state.clear()
+        await message.answer(f"✅ Yuborildi: {count} ta\n❌ Xato: {fail} ta")
+
+    @dp.message(AdminS.ad_text)
+    async def adm_ad_text(message: types.Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID: return
+        await state.update_data(
+            ad_photo=message.photo[-1].file_id if message.photo else None,
+            ad_video=message.video.file_id if message.video else None,
+            ad_text=message.text or message.caption or ""
+        )
+        await state.set_state(AdminS.ad_schedule)
+        await message.answer(
+            "⏰ Qachon yuborilsin?\n\n"
+            "Hozir yuborish uchun: now\n"
+            "Vaqt belgilash: KK.OY.YYYY SS:DD\n"
+            "Misol: 25.06.2026 14:30"
+        )
+
+    @dp.message(AdminS.ad_schedule)
+    async def adm_ad_schedule(message: types.Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID: return
+        ctx_data = await state.get_data()
+        ad_lang  = ctx_data.get("ad_lang", "all")
+        inp      = message.text.strip().lower()
+
+        if inp == "now":
+            data  = load_data()
+            count = 0
+            fail  = 0
+            for uid, user in data.items():
+                if user.get("blocked"): continue
+                if ad_lang != "all" and user.get("lang") != ad_lang: continue
+                try:
+                    if ctx_data.get("ad_photo"):
+                        await _bot.send_photo(int(uid), ctx_data["ad_photo"], caption=ctx_data.get("ad_text",""))
+                    elif ctx_data.get("ad_video"):
+                        await _bot.send_video(int(uid), ctx_data["ad_video"], caption=ctx_data.get("ad_text",""))
+                    else:
+                        await _bot.send_message(int(uid), ctx_data.get("ad_text",""))
+                    count += 1
+                except:
+                    fail += 1
+                await asyncio.sleep(0.05)
+            await state.clear()
+            await message.answer(f"✅ Yuborildi: {count} ta\n❌ Xato: {fail} ta")
+        else:
+            try:
+                dt = datetime.strptime(inp, "%d.%m.%Y %H:%M")
+                settings = load_settings()
+                if "scheduled_ads" not in settings: settings["scheduled_ads"] = []
+                settings["scheduled_ads"].append({
+                    "send_at": dt.strftime("%Y-%m-%d %H:%M"),
+                    "lang": ad_lang,
+                    "text": ctx_data.get("ad_text",""),
+                    "photo": ctx_data.get("ad_photo"),
+                    "video": ctx_data.get("ad_video"),
+                    "sent": False
+                })
+                save_settings(settings)
+                await state.clear()
+                await message.answer(f"✅ Rejalashtirildi: {dt.strftime('%d.%m.%Y %H:%M')}")
+            except:
+                await message.answer("❌ Format: 25.06.2026 14:30\nYoki: now")
+
+    @dp.message(AdminS.add_channel)
+    async def adm_add_ch(message: types.Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID: return
+        try:
+            parts    = message.text.strip().split("|")
+            ch_id    = parts[0].strip()
+            ch_name  = parts[1].strip()
+            ch_url   = parts[2].strip()
+            ctx_data = await state.get_data()
+            ch_lang  = ctx_data.get("ch_lang", "all")
+            ch_langs = [] if ch_lang == "all" else [ch_lang]
+            settings = load_settings()
+            if "required_channels" not in settings: settings["required_channels"] = []
+            settings["required_channels"].append({
+                "id": ch_id, "name": ch_name, "url": ch_url, "langs": ch_langs
+            })
+            save_settings(settings)
+            await state.clear()
+            lang_name = "Hammaga" if ch_lang == "all" else LANGUAGES.get(ch_lang, ch_lang)
+            await message.answer(f"✅ Qo'shildi: {ch_name} ({lang_name})")
+        except:
+            await message.answer("❌ Format: @username|Kanal nomi|https://t.me/username")
+
+    @dp.message(AdminS.add_quote)
+    async def adm_add_q(message: types.Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID: return
+        ctx_data = await state.get_data()
+        q_lang   = ctx_data.get("q_lang", "en")
+        settings = load_settings()
+        quotes   = settings.get("motivational_quotes", {})
+        langs_to = list(LANGUAGES.keys()) if q_lang == "all" else [q_lang]
+        for l in langs_to:
+            if l not in quotes: quotes[l] = []
+            quotes[l].append(message.text.strip())
+        settings["motivational_quotes"] = quotes
+        save_settings(settings)
+        await state.clear()
+        await message.answer(f"✅ Iqtibos qo'shildi: {', '.join(langs_to)}")
+
+    @dp.message(AdminS.quote_time)
+    async def adm_q_time(message: types.Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID: return
+        try:
+            h, m = map(int, message.text.strip().split(":"))
+            settings = load_settings()
+            settings["quote_time"] = f"{h:02d}:{m:02d}"
+            save_settings(settings)
+            await state.clear()
+            await message.answer(f"✅ Vaqt o'rnatildi: {h:02d}:{m:02d}")
+        except:
+            await message.answer("❌ Format: HH:MM (masalan: 08:00)")
+
+    @dp.message(AdminS.edit_welcome)
+    async def adm_edit_we(message: types.Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID: return
+        ctx_data = await state.get_data()
+        lang     = ctx_data.get("edit_lang", "en")
+        settings = load_settings()
+        if "welcome_text" not in settings: settings["welcome_text"] = {}
+        settings["welcome_text"][lang] = message.text.strip()
+        save_settings(settings)
+        await state.clear()
+        await message.answer(f"✅ Yangilandi ({LANGUAGES.get(lang,lang)})")
+
+    @dp.message(AdminS.edit_oferta)
+    async def adm_edit_of(message: types.Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID: return
+        ctx_data = await state.get_data()
+        lang     = ctx_data.get("edit_lang", "en")
+        settings = load_settings()
+        if "oferta_text" not in settings: settings["oferta_text"] = {}
+        if message.photo:
+            settings["oferta_text"][lang] = {
+                "type": "photo",
+                "file_id": message.photo[-1].file_id,
+                "caption": message.caption or ""
+            }
+        elif message.video:
+            settings["oferta_text"][lang] = {
+                "type": "video",
+                "file_id": message.video.file_id,
+                "caption": message.caption or ""
+            }
+        else:
+            settings["oferta_text"][lang] = message.text.strip()
+        save_settings(settings)
+        await state.clear()
+        await message.answer(f"✅ Oferta yangilandi ({LANGUAGES.get(lang,lang)})")
+
+    @dp.message(AdminS.edit_donation)
+    async def adm_edit_don(message: types.Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID: return
+        ctx_data = await state.get_data()
+        lang     = ctx_data.get("edit_lang", "en")
+        settings = load_settings()
+        if not isinstance(settings.get("donation_text"), dict):
+            settings["donation_text"] = {}
+        settings["donation_text"][lang] = message.text.strip()
+        save_settings(settings)
+        await state.clear()
+        await message.answer(f"✅ Donat matni yangilandi ({LANGUAGES.get(lang,lang)})")
+
+    @dp.message(AdminS.edit_sectext)
+    async def adm_edit_sectext(message: types.Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID: return
+        ctx_data = await state.get_data()
+        sec_key  = ctx_data.get("sec_key", "")
+        lang     = ctx_data.get("edit_lang", "en")
+        settings = load_settings()
+        if "custom_section_texts" not in settings:
+            settings["custom_section_texts"] = {}
+        if sec_key not in settings["custom_section_texts"]:
+            settings["custom_section_texts"][sec_key] = {}
+        settings["custom_section_texts"][sec_key][lang] = message.text.strip()
+        save_settings(settings)
+        await state.clear()
+        await message.answer(f"✅ Bo'lim matni yangilandi: {sec_key} ({LANGUAGES.get(lang,lang)})")
+
+    @dp.message(AdminS.add_banned)
+    async def adm_add_ban(message: types.Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID: return
+        words    = [w.strip() for w in message.text.strip().split("\n") if w.strip()]
+        settings = load_settings()
+        if "banned_words" not in settings: settings["banned_words"] = []
+        settings["banned_words"].extend(words)
+        save_settings(settings)
+        await state.clear()
+        await message.answer(f"✅ {len(words)} ta so'z qo'shildi")
+
+    @dp.message(AdminS.warn_user)
+    async def adm_warn(message: types.Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID: return
+        try:
+            uid      = int(message.text.strip())
+            data     = load_data()
+            user     = data.get(str(uid), {})
+            lang     = user.get("lang", "en")
+            warnings = user.get("warnings", 0) + 1
+            update_user(uid, {"warnings": warnings})
+            if warnings >= 4:
+                update_user(uid, {"blocked": True})
+                try:
+                    await _bot.send_message(uid, f"🚫 Hisobingiz bloklandi.\n📩 @Rustamjonoff1")
+                except: pass
+                await message.answer(f"🚫 Bloklandi: {uid}")
+            else:
+                left = 3 - warnings
+                warn_msgs = {
+                    "uz": f"⚠️ Ogohlantirish {warnings}/3\n\nQoidalar buzilmoqda.\nYana {left} ta ogohlantirishdan so'ng bloklansiz.\n\n/oferta",
+                    "en": f"⚠️ Warning {warnings}/3\n\nRules violation detected.\nAfter {left} more warning(s) you will be blocked.\n\n/oferta",
+                    "ru": f"⚠️ Предупреждение {warnings}/3\n\nНарушение правил.\nЕщё {left} — блокировка.\n\n/oferta",
+                    "ar": f"⚠️ تحذير {warnings}/3\n\nانتهاك القواعد.\nبعد {left} تحذير — حظر.\n\n/oferta",
+                    "tr": f"⚠️ Uyarı {warnings}/3\n\nKural ihlali.\n{left} uyarı daha — engel.\n\n/oferta",
+                    "es": f"⚠️ Advertencia {warnings}/3\n\nViolación de reglas.\n{left} más — bloqueo.\n\n/oferta",
+                    "hi": f"⚠️ चेतावनी {warnings}/3\n\nनियम उल्लंघन।\n{left} और — ब्लॉक।\n\n/oferta",
+                }
+                try:
+                    await _bot.send_message(uid, warn_msgs.get(lang, warn_msgs["en"]))
+                except: pass
+                await message.answer(f"⚠️ Ogohlantirish yuborildi ({warnings}/3)")
+            await state.clear()
+        except:
+            await message.answer("❌ Noto'g'ri ID")
+
+    @dp.message(AdminS.block_user)
+    async def adm_block(message: types.Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID: return
+        try:
+            uid  = int(message.text.strip())
+            data = load_data()
+            user = data.get(str(uid), {})
+            lang = user.get("lang", "en")
+            update_user(uid, {"blocked": True})
+            blocked_msgs = {
+                "uz": "🚫 Hisobingiz bloklandi.\nHaqsiz bloklangan bo'lsangiz: 📩 @Rustamjonoff1",
+                "en": "🚫 Your account has been blocked.\nIf you think this is wrong: 📩 @Rustamjonoff1",
+                "ru": "🚫 Ваш аккаунт заблокирован.\nЕсли считаете это ошибкой: 📩 @Rustamjonoff1",
+                "ar": "🚫 تم حظر حسابك.\nإذا كان هذا خطأ: 📩 @Rustamjonoff1",
+                "tr": "🚫 Hesabınız engellendi.\nHaksızsa: 📩 @Rustamjonoff1",
+                "es": "🚫 Tu cuenta ha sido bloqueada.\nSi es un error: 📩 @Rustamjonoff1",
+                "hi": "🚫 आपका खाता ब्लॉक हुआ।\nगलत है तो: 📩 @Rustamjonoff1",
+            }
+            try:
+                await _bot.send_message(uid, blocked_msgs.get(lang, blocked_msgs["en"]))
+            except: pass
+            await state.clear()
+            await message.answer(f"🚫 Bloklandi: {uid}")
+        except:
+            await message.answer("❌ Noto'g'ri ID")
+
+    @dp.message(AdminS.unblock_user)
+    async def adm_unblock(message: types.Message, state: FSMContext):
+        if message.from_user.id != ADMIN_ID: return
+        try:
+            uid  = int(message.text.strip())
+            data = load_data()
+            user = data.get(str(uid), {})
+            lang = user.get("lang", "en")
+            update_user(uid, {"blocked": False, "warnings": 0})
+            unblock_msgs = {
+                "uz": "✅ Hisobingiz blokdan chiqarildi! Botdan foydalanishingiz mumkin.",
+                "en": "✅ Your account has been unblocked! You can use the bot now.",
+                "ru": "✅ Ваш аккаунт разблокирован! Можете пользоваться ботом.",
+                "ar": "✅ تم إلغاء حظر حسابك! يمكنك استخدام البوت الآن.",
+                "tr": "✅ Hesabınızın engeli kaldırıldı! Botu kullanabilirsiniz.",
+                "es": "✅ Tu cuenta ha sido desbloqueada! Puedes usar el bot.",
+                "hi": "✅ आपका खाता अनब्लॉक हुआ! अब बॉट का उपयोग करें।",
+            }
+            try:
+                await _bot.send_message(uid, unblock_msgs.get(lang, unblock_msgs["en"]))
+            except: pass
+            await state.clear()
+            await message.answer(f"✅ Blokdan chiqarildi: {uid}")
+        except:
+            await message.answer("❌ Noto'g'ri ID")

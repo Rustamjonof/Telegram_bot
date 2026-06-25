@@ -1,0 +1,457 @@
+"""
+Start Daily Bot - Referal tizimi
+"""
+
+from aiogram import types, F
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from database import (
+    get_user, update_user, get_referral, add_referral,
+    get_discount, get_discounted_price, check_subscription,
+    TARIFF_PRICES
+)
+from datetime import datetime
+import sys
+
+ADMIN_ID     = 5236920689
+BOT_USERNAME = "Startdaily_bot"
+
+# ============================================================
+# TARJIMALAR
+# ============================================================
+REF_TEXTS = {
+    "title": {
+        "uz": "🎁 Referal tizimi",
+        "en": "🎁 Referral System",
+        "ru": "🎁 Реферальная система",
+        "ar": "🎁 نظام الإحالة",
+        "tr": "🎁 Referans Sistemi",
+        "es": "🎁 Sistema de Referidos",
+        "hi": "🎁 रेफरल सिस्टम",
+    },
+    "your_link": {
+        "uz": "🔗 Sizning referal havolangiz:",
+        "en": "🔗 Your referral link:",
+        "ru": "🔗 Ваша реферальная ссылка:",
+        "ar": "🔗 رابط الإحالة الخاص بك:",
+        "tr": "🔗 Referans bağlantınız:",
+        "es": "🔗 Tu enlace de referido:",
+        "hi": "🔗 आपका रेफरल लिंक:",
+    },
+    "your_stats": {
+        "uz": "📊 Sizning statistikangiz:",
+        "en": "📊 Your statistics:",
+        "ru": "📊 Ваша статистика:",
+        "ar": "📊 إحصائياتك:",
+        "tr": "📊 İstatistikleriniz:",
+        "es": "📊 Tus estadísticas:",
+        "hi": "📊 आपकी सांख्यिकी:",
+    },
+    "total_refs": {
+        "uz": "👥 Jami referallar",
+        "en": "👥 Total referrals",
+        "ru": "👥 Всего рефералов",
+        "ar": "👥 إجمالي الإحالات",
+        "tr": "👥 Toplam referanslar",
+        "es": "👥 Total de referidos",
+        "hi": "👥 कुल रेफरल",
+    },
+    "month_refs": {
+        "uz": "📅 Bu oy",
+        "en": "📅 This month",
+        "ru": "📅 В этом месяце",
+        "ar": "📅 هذا الشهر",
+        "tr": "📅 Bu ay",
+        "es": "📅 Este mes",
+        "hi": "📅 इस महीने",
+    },
+    "carried_refs": {
+        "uz": "🔄 Keyingi oyga o'tgan",
+        "en": "🔄 Carried to next month",
+        "ru": "🔄 Перенесено на следующий месяц",
+        "ar": "🔄 منقول للشهر القادم",
+        "tr": "🔄 Sonraki aya taşınan",
+        "es": "🔄 Llevado al próximo mes",
+        "hi": "🔄 अगले महीने ले जाया गया",
+    },
+    "discount_std": {
+        "uz": "⭐ Standart chegirma",
+        "en": "⭐ Standard discount",
+        "ru": "⭐ Скидка Стандарт",
+        "ar": "⭐ خصم قياسي",
+        "tr": "⭐ Standart indirim",
+        "es": "⭐ Descuento estándar",
+        "hi": "⭐ स्टैंडर्ड छूट",
+    },
+    "discount_prem": {
+        "uz": "💎 Premium chegirma",
+        "en": "💎 Premium discount",
+        "ru": "💎 Скидка Премиум",
+        "ar": "💎 خصم بريميوم",
+        "tr": "💎 Premium indirim",
+        "es": "💎 Descuento premium",
+        "hi": "💎 प्रीमियम छूट",
+    },
+    "no_discount": {
+        "uz": "Hozircha chegirma yo'q",
+        "en": "No discount yet",
+        "ru": "Скидки пока нет",
+        "ar": "لا يوجد خصم بعد",
+        "tr": "Henüz indirim yok",
+        "es": "Sin descuento aún",
+        "hi": "अभी कोई छूट नहीं",
+    },
+    "how_works": {
+        "uz": (
+            "📖 Qanday ishlaydi?\n\n"
+            "1️⃣ Havolangizni do'stlaringizga yuboring\n"
+            "2️⃣ Do'stingiz shu havola orqali botga kiradi\n"
+            "3️⃣ Ikkalangiz ham bonus olasiz!\n\n"
+            "🎁 Bonuslar:\n"
+            "• Yangi kelgan odam: +2 ta bepul so'rov\n"
+            "• 5 referal → Standart -20%, Premium -5%\n"
+            "• 10 referal → Standart -37%, Premium -10%\n\n"
+            "⚠️ Qoidalar:\n"
+            "• Chegirma faqat oylik tarifga\n"
+            "• Yillik: Standart -10%/-20%, Premium -3%/-5%\n"
+            "• 10 tadan ortiq referal keyingi oyga o'tadi\n"
+            "• Maksimal chegirma: Standart 37%, Premium 10%"
+        ),
+        "en": (
+            "📖 How it works?\n\n"
+            "1️⃣ Send your link to friends\n"
+            "2️⃣ Friend joins via your link\n"
+            "3️⃣ Both get bonuses!\n\n"
+            "🎁 Bonuses:\n"
+            "• New user: +2 free requests\n"
+            "• 5 referrals → Standard -20%, Premium -5%\n"
+            "• 10 referrals → Standard -37%, Premium -10%\n\n"
+            "⚠️ Rules:\n"
+            "• Discount applies to monthly plan only\n"
+            "• Yearly: Standard -10%/-20%, Premium -3%/-5%\n"
+            "• 10+ referrals carry to next month\n"
+            "• Max discount: Standard 37%, Premium 10%"
+        ),
+        "ru": (
+            "📖 Как это работает?\n\n"
+            "1️⃣ Отправьте ссылку друзьям\n"
+            "2️⃣ Друг заходит по вашей ссылке\n"
+            "3️⃣ Оба получают бонусы!\n\n"
+            "🎁 Бонусы:\n"
+            "• Новый пользователь: +2 бесплатных запроса\n"
+            "• 5 рефералов → Стандарт -20%, Премиум -5%\n"
+            "• 10 рефералов → Стандарт -37%, Премиум -10%\n\n"
+            "⚠️ Правила:\n"
+            "• Скидка только на месячный тариф\n"
+            "• Годовой: Стандарт -10%/-20%, Премиум -3%/-5%\n"
+            "• 10+ рефералов переносятся на следующий месяц\n"
+            "• Макс скидка: Стандарт 37%, Премиум 10%"
+        ),
+        "ar": (
+            "📖 كيف يعمل؟\n\n"
+            "1️⃣ أرسل رابطك للأصدقاء\n"
+            "2️⃣ يدخل الصديق عبر رابطك\n"
+            "3️⃣ كلاكما يحصل على مكافآت!\n\n"
+            "🎁 المكافآت:\n"
+            "• مستخدم جديد: +2 طلبات مجانية\n"
+            "• 5 إحالات → قياسي -20%، بريميوم -5%\n"
+            "• 10 إحالات → قياسي -37%، بريميوم -10%\n\n"
+            "⚠️ القواعد:\n"
+            "• الخصم على الاشتراك الشهري فقط\n"
+            "• السنوي: قياسي -10%/-20%، بريميوم -3%/-5%\n"
+            "• 10+ إحالات تنتقل للشهر القادم\n"
+            "• أقصى خصم: قياسي 37%، بريميوم 10%"
+        ),
+        "tr": (
+            "📖 Nasıl çalışır?\n\n"
+            "1️⃣ Bağlantınızı arkadaşlarınıza gönderin\n"
+            "2️⃣ Arkadaşınız bağlantınızla giriyor\n"
+            "3️⃣ İkiniz de bonus alırsınız!\n\n"
+            "🎁 Bonuslar:\n"
+            "• Yeni kullanıcı: +2 ücretsiz istek\n"
+            "• 5 referans → Standart -%20, Premium -%5\n"
+            "• 10 referans → Standart -%37, Premium -%10\n\n"
+            "⚠️ Kurallar:\n"
+            "• İndirim sadece aylık plana\n"
+            "• Yıllık: Standart -%10/-%20, Premium -%3/-%5\n"
+            "• 10+ referans sonraki aya taşınır\n"
+            "• Maks indirim: Standart %37, Premium %10"
+        ),
+        "es": (
+            "📖 ¿Cómo funciona?\n\n"
+            "1️⃣ Envía tu enlace a amigos\n"
+            "2️⃣ Tu amigo entra por tu enlace\n"
+            "3️⃣ ¡Ambos reciben bonos!\n\n"
+            "🎁 Bonos:\n"
+            "• Nuevo usuario: +2 solicitudes gratis\n"
+            "• 5 referidos → Estándar -20%, Premium -5%\n"
+            "• 10 referidos → Estándar -37%, Premium -10%\n\n"
+            "⚠️ Reglas:\n"
+            "• Descuento solo en plan mensual\n"
+            "• Anual: Estándar -10%/-20%, Premium -3%/-5%\n"
+            "• 10+ referidos se llevan al próximo mes\n"
+            "• Máx descuento: Estándar 37%, Premium 10%"
+        ),
+        "hi": (
+            "📖 यह कैसे काम करता है?\n\n"
+            "1️⃣ अपना लिंक दोस्तों को भेजें\n"
+            "2️⃣ दोस्त आपके लिंक से जुड़ता है\n"
+            "3️⃣ दोनों को बोनस मिलता है!\n\n"
+            "🎁 बोनस:\n"
+            "• नया उपयोगकर्ता: +2 मुफ्त अनुरोध\n"
+            "• 5 रेफरल → स्टैंडर्ड -20%, प्रीमियम -5%\n"
+            "• 10 रेफरल → स्टैंडर्ड -37%, प्रीमियम -10%\n\n"
+            "⚠️ नियम:\n"
+            "• छूट केवल मासिक योजना पर\n"
+            "• वार्षिक: स्टैंडर्ड -10%/-20%, प्रीमियम -3%/-5%\n"
+            "• 10+ रेफरल अगले महीने जाते हैं\n"
+            "• अधिकतम छूट: स्टैंडर्ड 37%, प्रीमियम 10%"
+        ),
+    },
+    "welcome_bonus": {
+        "uz": "🎁 Referal havola orqali keldingiz!\n+2 ta bepul so'rov berildi!",
+        "en": "🎁 You joined via referral link!\n+2 free requests added!",
+        "ru": "🎁 Вы зашли по реферальной ссылке!\n+2 бесплатных запроса добавлено!",
+        "ar": "🎁 انضممت عبر رابط الإحالة!\nتمت إضافة +2 طلبات مجانية!",
+        "tr": "🎁 Referans bağlantısıyla katıldınız!\n+2 ücretsiz istek eklendi!",
+        "es": "🎁 ¡Te uniste por enlace de referido!\n¡+2 solicitudes gratis añadidas!",
+        "hi": "🎁 आप रेफरल लिंक से जुड़े!\n+2 मुफ्त अनुरोध जोड़े गए!",
+    },
+    "ref_joined": {
+        "uz": "🎉 Yangi referal!\n👤 {name} sizning havolangiz orqali qo'shildi!",
+        "en": "🎉 New referral!\n👤 {name} joined via your link!",
+        "ru": "🎉 Новый реферал!\n👤 {name} присоединился по вашей ссылке!",
+        "ar": "🎉 إحالة جديدة!\n👤 {name} انضم عبر رابطك!",
+        "tr": "🎉 Yeni referans!\n👤 {name} bağlantınızla katıldı!",
+        "es": "🎉 ¡Nuevo referido!\n👤 ¡{name} se unió por tu enlace!",
+        "hi": "🎉 नया रेफरल!\n👤 {name} आपके लिंक से जुड़ा!",
+    },
+    "discount_updated": {
+        "uz": "🎁 Chegirma yangilandi!\nStandart: {std}% | Premium: {prem}%",
+        "en": "🎁 Discount updated!\nStandard: {std}% | Premium: {prem}%",
+        "ru": "🎁 Скидка обновлена!\nСтандарт: {std}% | Премиум: {prem}%",
+        "ar": "🎁 تم تحديث الخصم!\nقياسي: {std}% | بريميوم: {prem}%",
+        "tr": "🎁 İndirim güncellendi!\nStandart: {std}% | Premium: {prem}%",
+        "es": "🎁 ¡Descuento actualizado!\nEstándar: {std}% | Premium: {prem}%",
+        "hi": "🎁 छूट अपडेट हुई!\nस्टैंडर्ड: {std}% | प्रीमियम: {prem}%",
+    },
+}
+
+# ============================================================
+# KLAVIATURALAR
+# ============================================================
+def referral_kb(lang):
+    import sys
+    main_module = sys.modules.get('__main__')
+    sett   = main_module.load_settings() if main_module and hasattr(main_module, 'load_settings') else {}
+    custom = sett.get("custom_section_texts", {})
+
+    def gbtn(key, default):
+        return custom.get(key, {}).get(lang, default)
+
+    how = {
+        "uz":"📖 Qanday ishlaydi?", "en":"📖 How it works?",
+        "ru":"📖 Как работает?",    "ar":"📖 كيف يعمل؟",
+        "tr":"📖 Nasıl çalışır?",   "es":"📖 ¿Cómo funciona?",
+        "hi":"📖 कैसे काम करता है?"
+    }
+    back = {
+        "uz":"🔙 Orqaga", "en":"🔙 Back", "ru":"🔙 Назад",
+        "ar":"🔙 رجوع",  "tr":"🔙 Geri",  "es":"🔙 Atrás", "hi":"🔙 वापस"
+    }
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(
+            text=gbtn("btn_ref_howworks", how.get(lang, how["en"])),
+            callback_data="ref_howworks"
+        )],
+        [InlineKeyboardButton(
+            text=gbtn("btn_back", back.get(lang, back["en"])),
+            callback_data="ref_back"
+        )],
+    ])
+
+# ============================================================
+# HANDLERLARNI RO'YXATDAN O'TKAZISH
+# ============================================================
+def register_referral_handlers(dp, bot):
+
+    # ---- REFERAL SAHIFASI ----
+    @dp.callback_query(F.data == "ref_page")
+    async def cb_ref_page(callback: types.CallbackQuery):
+        uid = callback.from_user.id
+        import sys
+        main_module = sys.modules.get('__main__')
+        if main_module and hasattr(main_module, 'get_user'):
+            user = main_module.get_user(uid)
+        else:
+            user = get_user(uid)
+        lang = user.get("lang", "en")
+        ref  = get_referral(uid)
+
+        ref_code = ref.get("ref_code", "")
+        link = f"https://t.me/Startdaily_bot?start=ref_{ref_code}"
+
+        std_disc  = ref.get("discount_standard", 0)
+        prem_disc = ref.get("discount_premium", 0)
+
+        disc_std_text  = f"{std_disc}%" if std_disc else REF_TEXTS["no_discount"].get(lang, "—")
+        disc_prem_text = f"{prem_disc}%" if prem_disc else REF_TEXTS["no_discount"].get(lang, "—")
+
+        carried = ref.get("carried_refs", 0)
+        carried_text = f"\n{REF_TEXTS['carried_refs'].get(lang,'')}: {carried}" if carried > 0 else ""
+
+        text = (
+            f"{REF_TEXTS['title'].get(lang,'')}\n\n"
+            f"{REF_TEXTS['your_link'].get(lang,'')}\n"
+            f"{link}`\n\n"
+            f"{REF_TEXTS['your_stats'].get(lang,'')}\n"
+            f"👥 {REF_TEXTS['total_refs'].get(lang,'')}: {ref.get('total_refs', 0)}\n"
+            f"📅 {REF_TEXTS['month_refs'].get(lang,'')}: {ref.get('month_refs', 0)}"
+            f"{carried_text}\n\n"
+            f"⭐ {REF_TEXTS['discount_std'].get(lang,'')}: {disc_std_text}\n"
+            f"💎 {REF_TEXTS['discount_prem'].get(lang,'')}: {disc_prem_text}"
+        )
+        await callback.message.edit_text(
+            text,
+            reply_markup=referral_kb(lang),
+            parse_mode="Markdown"
+        )
+        import sys
+        main_module = sys.modules.get('__main__')
+        sett = main_module.load_settings() if main_module and hasattr(main_module, 'load_settings') else {}
+        custom_ref = sett.get("custom_section_texts", {}).get("referral_text", {}).get(lang, "")
+        if custom_ref:
+            await callback.message.edit_text(
+                custom_ref,
+                reply_markup=referral_kb(lang),
+                parse_mode="Markdown"
+            )
+            return
+
+    # ---- QANDAY ISHLAYDI ----
+    @dp.callback_query(F.data == "ref_howworks")
+    async def cb_ref_howworks(callback: types.CallbackQuery):
+        uid = callback.from_user.id
+        import sys
+        main_module = sys.modules.get('__main__')
+        if main_module and hasattr(main_module, 'get_user'):
+            user = main_module.get_user(uid)
+        else:
+            user = get_user(uid)
+        lang = user.get("lang", "en")
+
+        sett = main_module.load_settings() if main_module and hasattr(main_module, 'load_settings') else {}
+        custom_how = sett.get("custom_section_texts", {}).get("ref_howworks", {}).get(lang, "")
+        how_text = custom_how if custom_how else REF_TEXTS["how_works"].get(lang, REF_TEXTS["how_works"]["en"])
+
+        back = {
+            "uz": "🔙 Orqaga", "en": "🔙 Back", "ru": "🔙 Назад",
+            "ar": "🔙 رجوع", "tr": "🔙 Geri", "es": "🔙 Atrás", "hi": "🔙 वापस"
+        }
+        await callback.message.edit_text(
+            how_text,
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text=back.get(lang, "🔙 Back"),
+                    callback_data="ref_page"
+                )
+            ]])
+        )
+
+    # ---- ORQAGA ----
+    @dp.callback_query(F.data == "ref_back")
+    async def cb_ref_back(callback: types.CallbackQuery):
+        await callback.message.delete()
+
+    # ---- START DA REFERAL TEKSHIRISH ----
+    async def check_referral_start(uid, start_param, bot):
+        if not start_param or not start_param.startswith("ref_"):
+            return
+        ref_code    = start_param[4:]
+        user        = get_user(uid)
+        lang        = user.get("lang", "en")
+
+        # O'z havolasidan kirmasin
+        from database import get_conn
+        conn = get_conn()
+        c    = conn.cursor()
+        c.execute("SELECT uid FROM referrals WHERE ref_code=?", (ref_code,))
+        row  = c.fetchone()
+        conn.close()
+
+        if not row:
+            return
+        referrer_uid = row[0]
+        if referrer_uid == uid:
+            return
+
+        # Allaqachon referal orqali kelganmi
+        ref = get_referral(uid)
+        if ref.get("referred_by", 0) != 0:
+            return
+
+        # Referalni qo'shish
+        from database import get_conn as gc
+        conn2 = gc()
+        c2    = conn2.cursor()
+        c2.execute("UPDATE referrals SET referred_by=? WHERE uid=?", (referrer_uid, uid))
+        conn2.commit()
+        conn2.close()
+
+        add_referral(referrer_uid, uid)
+
+        # Yangi foydalanuvchiga bonus (+2 bepul so'rov)
+        from database import log_ai_request
+        # Bonus sifatida 2 ta so'rov huquqi berish — bonus_requests ustunida saqlaymiz
+        from database import get_conn as gc2
+        conn3 = gc2()
+        c3    = conn3.cursor()
+        # bonus_requests ustuni yo'q bo'lsa qo'shamiz
+        try:
+            c3.execute("ALTER TABLE users ADD COLUMN bonus_requests INTEGER DEFAULT 0")
+            conn3.commit()
+        except:
+            pass
+        c3.execute(
+            "UPDATE users SET bonus_requests = bonus_requests + 2 WHERE uid=?",
+            (uid,)
+        )
+        conn3.commit()
+        conn3.close()
+
+        # Yangi foydalanuvchiga xabar
+        try:
+            await bot.send_message(
+                uid,
+                REF_TEXTS["welcome_bonus"].get(lang, REF_TEXTS["welcome_bonus"]["en"])
+            )
+        except:
+            pass
+
+        # Referal egasiga xabar
+        referrer      = get_user(referrer_uid)
+        referrer_lang = referrer.get("lang", "en")
+        ref_data      = get_referral(referrer_uid)
+        std_disc      = ref_data.get("discount_standard", 0)
+        prem_disc     = ref_data.get("discount_premium", 0)
+
+        joined_msg = REF_TEXTS["ref_joined"].get(
+            referrer_lang,
+            REF_TEXTS["ref_joined"]["en"]
+        ).replace("{name}", user.get("name", "?"))
+
+        disc_msg = ""
+        if std_disc > 0 or prem_disc > 0:
+            disc_msg = "\n" + REF_TEXTS["discount_updated"].get(
+                referrer_lang,
+                REF_TEXTS["discount_updated"]["en"]
+            ).replace("{std}", str(std_disc)).replace("{prem}", str(prem_disc))
+
+        try:
+            await bot.send_message(referrer_uid, joined_msg + disc_msg)
+        except:
+            pass
+
+    # Tashqaridan chaqirish uchun
+    main_module = sys.modules.get('__main__')
+    if main_module:
+        main_module._check_referral_start = check_referral_start

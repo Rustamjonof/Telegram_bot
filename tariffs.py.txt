@@ -1,0 +1,576 @@
+"""
+Start Daily Bot - Tarif tizimi
+"""
+
+from aiogram import Bot, types, F
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from database import (
+    get_user, update_user, get_subscription, set_subscription,
+    check_subscription, create_payment, update_payment, get_payment,
+    get_referral, get_discount, get_discounted_price, TARIFF_PRICES
+)
+import os
+import json
+from datetime import datetime
+
+ADMIN_ID         = 5236920689
+PAYMENT_CHANNEL  = -1003968636090
+BOT_USERNAME     = "Startdaily_bot"
+
+TARIFF_NAMES = {
+    "uz": {"free": "🆓 Bepul",      "standard": "⭐ Standart", "premium": "💎 Premium"},
+    "en": {"free": "🆓 Free",       "standard": "⭐ Standard", "premium": "💎 Premium"},
+    "ru": {"free": "🆓 Бесплатно",  "standard": "⭐ Стандарт","premium": "💎 Премиум"},
+    "ar": {"free": "🆓 مجاني",      "standard": "⭐ قياسي",   "premium": "💎 بريميوم"},
+    "tr": {"free": "🆓 Ücretsiz",   "standard": "⭐ Standart", "premium": "💎 Premium"},
+    "es": {"free": "🆓 Gratis",     "standard": "⭐ Estándar", "premium": "💎 Premium"},
+    "hi": {"free": "🆓 मुफ़्त",     "standard": "⭐ स्टैंडर्ड","premium": "💎 प्रीमियम"},
+}
+
+PERIOD_NAMES = {
+    "uz": {"monthly": "Oylik",    "yearly": "Yillik"},
+    "en": {"monthly": "Monthly",  "yearly": "Yearly"},
+    "ru": {"monthly": "Месячный", "yearly": "Годовой"},
+    "ar": {"monthly": "شهري",     "yearly": "سنوي"},
+    "tr": {"monthly": "Aylık",    "yearly": "Yıllık"},
+    "es": {"monthly": "Mensual",  "yearly": "Anual"},
+    "hi": {"monthly": "मासिक",    "yearly": "वार्षिक"},
+}
+
+TARIFF_FEATURES = {
+    "uz": {
+        "free":     "✅ Har bir AI funksiya 1 martadan\n✅ Groq AI\n❌ Kunlik limit: 1 ta so'rov",
+        "standard": "✅ Kuniga 20 ta so'rov\n✅ GPT-4o mini\n✅ Word + Telegram format\n❌ Rasm yaratish yo'q",
+        "premium":  "✅ Cheksiz so'rovlar\n✅ GPT-4o (eng yaxshi)\n✅ DALL-E 3 (rasm)\n✅ Word + Telegram format\n✅ Ustuvor javob",
+    },
+    "en": {
+        "free":     "✅ Each AI function once\n✅ Groq AI\n❌ Daily limit: 1 request",
+        "standard": "✅ 20 requests/day\n✅ GPT-4o mini\n✅ Word + Telegram format\n❌ No image generation",
+        "premium":  "✅ Unlimited requests\n✅ GPT-4o (best)\n✅ DALL-E 3 (images)\n✅ Word + Telegram format\n✅ Priority response",
+    },
+    "ru": {
+        "free":     "✅ Каждая AI функция по 1 разу\n✅ Groq AI\n❌ Дневной лимит: 1 запрос",
+        "standard": "✅ 20 запросов/день\n✅ GPT-4o mini\n✅ Word + Telegram формат\n❌ Генерация изображений недоступна",
+        "premium":  "✅ Безлимитные запросы\n✅ GPT-4o (лучший)\n✅ DALL-E 3 (изображения)\n✅ Word + Telegram формат\n✅ Приоритетный ответ",
+    },
+    "ar": {
+        "free":     "✅ كل وظيفة AI مرة واحدة\n✅ Groq AI\n❌ الحد اليومي: طلب واحد",
+        "standard": "✅ 20 طلباً/يوم\n✅ GPT-4o mini\n✅ Word + تليغرام\n❌ لا توليد صور",
+        "premium":  "✅ طلبات غير محدودة\n✅ GPT-4o (الأفضل)\n✅ DALL-E 3 (صور)\n✅ Word + تليغرام\n✅ استجابة أولوية",
+    },
+    "tr": {
+        "free":     "✅ Her AI fonksiyonu 1 kez\n✅ Groq AI\n❌ Günlük limit: 1 istek",
+        "standard": "✅ Günde 20 istek\n✅ GPT-4o mini\n✅ Word + Telegram format\n❌ Görsel oluşturma yok",
+        "premium":  "✅ Sınırsız istek\n✅ GPT-4o (en iyi)\n✅ DALL-E 3 (görsel)\n✅ Word + Telegram format\n✅ Öncelikli yanıt",
+    },
+    "es": {
+        "free":     "✅ Cada función AI una vez\n✅ Groq AI\n❌ Límite diario: 1 solicitud",
+        "standard": "✅ 20 solicitudes/día\n✅ GPT-4o mini\n✅ Word + Telegram formato\n❌ Sin generación de imágenes",
+        "premium":  "✅ Solicitudes ilimitadas\n✅ GPT-4o (mejor)\n✅ DALL-E 3 (imágenes)\n✅ Word + Telegram formato\n✅ Respuesta prioritaria",
+    },
+    "hi": {
+        "free":     "✅ प्रत्येक AI फ़ंक्शन एक बार\n✅ Groq AI\n❌ दैनिक सीमा: 1 अनुरोध",
+        "standard": "✅ 20 अनुरोध/दिन\n✅ GPT-4o mini\n✅ Word + Telegram फ़ॉर्मेट\n❌ छवि निर्माण नहीं",
+        "premium":  "✅ असीमित अनुरोध\n✅ GPT-4o (सर्वश्रेष्ठ)\n✅ DALL-E 3 (छवियां)\n✅ Word + Telegram फ़ॉर्मेट\n✅ प्राथमिकता प्रतिक्रिया",
+    },
+}
+
+PAYMENT_DETAILS = {
+    "uz": "💳 To'lov rekvizitlari:\n\nHumo: 9860 1234 5678 9012\nUzcard: 8600 1234 5678 9012\n\nTo'lov summasini to'lang va chek rasmini yuboring.",
+    "en": "💳 Payment details:\n\nHumo: 9860 1234 5678 9012\nUzcard: 8600 1234 5678 9012\n\nPay the amount and send the receipt photo.",
+    "ru": "💳 Реквизиты оплаты:\n\nHumo: 9860 1234 5678 9012\nUzcard: 8600 1234 5678 9012\n\nОплатите и отправьте фото чека.",
+    "ar": "💳 تفاصيل الدفع:\n\nHumo: 9860 1234 5678 9012\nUzcard: 8600 1234 5678 9012\n\nادفع المبلغ وأرسل صورة الإيصال.",
+    "tr": "💳 Ödeme detayları:\n\nHumo: 9860 1234 5678 9012\nUzcard: 8600 1234 5678 9012\n\nTutarı ödeyin ve makbuz fotoğrafını gönderin.",
+    "es": "💳 Detalles de pago:\n\nHumo: 9860 1234 5678 9012\nUzcard: 8600 1234 5678 9012\n\nPague el monto y envíe la foto del recibo.",
+    "hi": "💳 भुगतान विवरण:\n\nHumo: 9860 1234 5678 9012\nUzcard: 8600 1234 5678 9012\n\nराशि का भुगतान करें और रसीद की फ़ोटो भेजें।",
+}
+
+BACK_BTN = {
+    "uz": "🔙 Orqaga", "en": "🔙 Back", "ru": "🔙 Назад",
+    "ar": "🔙 رجوع",  "tr": "🔙 Geri",  "es": "🔙 Atrás", "hi": "🔙 वापस"
+}
+
+TARIFF_TITLE = {
+    "uz": "💎 Tariflar", "en": "💎 Tariffs", "ru": "💎 Тарифы",
+    "ar": "💎 الباقات",  "tr": "💎 Tarifler","es": "💎 Tarifas", "hi": "💎 टैरिफ"
+}
+
+CURRENT_TARIFF = {
+    "uz": "Joriy tarifingiz", "en": "Your current plan", "ru": "Ваш текущий план",
+    "ar": "خطتك الحالية",     "tr": "Mevcut planınız",  "es": "Tu plan actual", "hi": "आपकी वर्तमान योजना"
+}
+
+CHOOSE_PERIOD = {
+    "uz": "To'lov turini tanlang:", "en": "Choose payment period:", "ru": "Выберите период:",
+    "ar": "اختر فترة الدفع:",       "tr": "Ödeme periyodunu seçin:","es": "Elige el período:", "hi": "भुगतान अवधि चुनें:"
+}
+
+STARS_BTN = {
+    "uz": "⭐ Telegram Stars", "en": "⭐ Telegram Stars", "ru": "⭐ Telegram Stars",
+    "ar": "⭐ نجوم تيليغرام",  "tr": "⭐ Telegram Yıldızları","es": "⭐ Estrellas Telegram","hi": "⭐ टेलीग्राम स्टार्स"
+}
+
+CARD_BTN = {
+    "uz": "💳 Karta orqali", "en": "💳 Via card", "ru": "💳 Картой",
+    "ar": "💳 عبر البطاقة",  "tr": "💳 Kartla",   "es": "💳 Con tarjeta","hi": "💳 कार्ड से"
+}
+
+# ============================================================
+# FSM
+# ============================================================
+class TariffS(StatesGroup):
+    waiting_check = State()
+
+# ============================================================
+# KLAVIATURALAR
+# ============================================================
+def tariffs_kb(lang, uid):
+    import sys
+    main_module = sys.modules.get('__main__')
+    sett   = main_module.load_settings() if main_module and hasattr(main_module, 'load_settings') else {}
+    custom = sett.get("custom_section_texts", {})
+
+    def gbtn(key, default):
+        return custom.get(key, {}).get(lang, default)
+
+    sub  = check_subscription(uid)
+    rows = []
+    for tariff in ["standard", "premium"]:
+        default_name = TARIFF_NAMES.get(lang, TARIFF_NAMES["en"])[tariff]
+        name         = gbtn(f"btn_tariff_{tariff}", default_name)
+        active       = " ✓" if sub == tariff else ""
+        rows.append([InlineKeyboardButton(
+            text=f"{name}{active}",
+            callback_data=f"tariff_view_{tariff}"
+        )])
+    rows.append([InlineKeyboardButton(
+        text=gbtn("btn_back", BACK_BTN.get(lang, "🔙 Back")),
+        callback_data="tariff_back"
+    )])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+def period_kb(lang, tariff, uid):
+    monthly_price, monthly_disc = get_discounted_price(uid, tariff, 'monthly')
+    yearly_price,  yearly_disc  = get_discounted_price(uid, tariff, 'yearly')
+
+    monthly_text = f"📅 {PERIOD_NAMES.get(lang, PERIOD_NAMES['en'])['monthly']} — {monthly_price:,} UZS"
+    yearly_text  = f"📆 {PERIOD_NAMES.get(lang, PERIOD_NAMES['en'])['yearly']} — {yearly_price:,} UZS"
+
+    if monthly_disc > 0:
+        monthly_text += f" (-{monthly_disc}%)"
+    if yearly_disc > 0:
+        yearly_text += f" (-{yearly_disc}%)"
+
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=monthly_text, callback_data=f"tariff_pay_{tariff}_monthly")],
+        [InlineKeyboardButton(text=yearly_text,  callback_data=f"tariff_pay_{tariff}_yearly")],
+        [InlineKeyboardButton(text=BACK_BTN.get(lang, "🔙 Back"), callback_data="tariff_list")],
+    ])
+
+def payment_method_kb(lang, tariff, period):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=CARD_BTN.get(lang, "💳 Karta"),            callback_data=f"tariff_card_{tariff}_{period}")],
+        [InlineKeyboardButton(text=BACK_BTN.get(lang, "🔙 Back"),             callback_data=f"tariff_view_{tariff}")],
+    ])
+
+def channel_payment_kb(payment_id):
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(text="✅ Tasdiqlash",   callback_data=f"tconf1_{payment_id}"),
+        InlineKeyboardButton(text="❌ Bekor qilish", callback_data=f"tcanc1_{payment_id}"),
+    ]])
+
+# ============================================================
+# HANDLERLARNI RO'YXATDAN O'TKAZISH
+# ============================================================
+def register_tariff_handlers(dp, bot):
+
+    # ---- TARIFLAR RO'YXATI ----
+    @dp.callback_query(F.data == "tariff_list")
+    async def cb_tariff_list(callback: types.CallbackQuery):
+        uid  = callback.from_user.id
+        import sys
+        main_module = sys.modules.get('__main__')
+        if main_module and hasattr(main_module, 'get_user'):
+            user = main_module.get_user(uid)
+        else:
+            user = get_user(uid)
+        lang = user.get("lang", "en")
+
+        sub  = check_subscription(uid)
+        tariff_name = TARIFF_NAMES.get(lang, TARIFF_NAMES["en"]).get(sub, sub)
+        text = (
+            f"{TARIFF_TITLE.get(lang, '💎 Tariffs')}\n\n"
+            f"{CURRENT_TARIFF.get(lang, 'Current plan')}: {tariff_name}\n\n"
+            f"{TARIFF_FEATURES.get(lang, TARIFF_FEATURES['en']).get(sub, '')}"
+        )
+        await callback.message.edit_text(text, reply_markup=tariffs_kb(lang, uid))
+
+    @dp.callback_query(F.data == "tariff_back")
+    async def cb_tariff_back(callback: types.CallbackQuery):
+        await callback.message.delete()
+
+    # ---- TARIF KO'RISH ----
+    @dp.callback_query(F.data.startswith("tariff_view_"))
+    async def cb_tariff_view(callback: types.CallbackQuery):
+        uid    = callback.from_user.id
+        import sys
+        main_module = sys.modules.get('__main__')
+        if main_module and hasattr(main_module, 'get_user'):
+            user = main_module.get_user(uid)
+        else:
+            user = get_user(uid)
+        lang = user.get("lang", "en")
+
+        tariff = callback.data[12:]
+        name   = TARIFF_NAMES.get(lang, TARIFF_NAMES["en"]).get(tariff, tariff)
+        feats  = TARIFF_FEATURES.get(lang, TARIFF_FEATURES["en"]).get(tariff, "")
+
+        monthly_price, monthly_disc = get_discounted_price(uid, tariff, 'monthly')
+        yearly_price,  yearly_disc  = get_discounted_price(uid, tariff, 'yearly')
+
+        price_text = (
+            f"\n\n💰 {PERIOD_NAMES.get(lang, PERIOD_NAMES['en'])['monthly']}: "
+            f"{monthly_price:,} UZS"
+            + (f" (-{monthly_disc}%)" if monthly_disc else "") +
+            f"\n💰 {PERIOD_NAMES.get(lang, PERIOD_NAMES['en'])['yearly']}: "
+            f"{yearly_price:,} UZS"
+            + (f" (-{yearly_disc}%)" if yearly_disc else "")
+        )
+
+        import sys
+        main_module  = sys.modules.get('__main__')
+        sett         = main_module.load_settings() if main_module and hasattr(main_module, 'load_settings') else {}
+        custom_feats = sett.get("custom_section_texts", {}).get(f"tariff_{tariff}", {}).get(lang, "")
+
+        if custom_feats:
+            await callback.message.edit_text(custom_feats, reply_markup=period_kb(lang, tariff, uid))
+        else:
+            await callback.message.edit_text(
+                f"{name}\n\n{feats}{price_text}\n\n{CHOOSE_PERIOD.get(lang, 'Choose period:')}",
+                reply_markup=period_kb(lang, tariff, uid)
+            )
+
+    # ---- TO'LOV DAVRI ----
+    @dp.callback_query(F.data.startswith("tariff_pay_"))
+    async def cb_tariff_pay(callback: types.CallbackQuery):
+        uid    = callback.from_user.id
+        import sys
+        main_module = sys.modules.get('__main__')
+        if main_module and hasattr(main_module, 'get_user'):
+            user = main_module.get_user(uid)
+        else:
+            user = get_user(uid)
+        lang = user.get("lang", "en")
+
+        parts  = callback.data.split("_")
+        tariff = parts[2]
+        period = parts[3]
+        await callback.message.edit_text(
+            CHOOSE_PERIOD.get(lang, "Choose payment method:"),
+            reply_markup=payment_method_kb(lang, tariff, period)
+        )
+
+    # ---- KARTA ORQALI TO'LOV ----
+    @dp.callback_query(F.data.startswith("tariff_card_"))
+    async def cb_tariff_card(callback: types.CallbackQuery, state: FSMContext):
+        uid    = callback.from_user.id
+        import sys
+        main_module = sys.modules.get('__main__')
+        if main_module and hasattr(main_module, 'get_user'):
+            user = main_module.get_user(uid)
+        else:
+            user = get_user(uid)
+        lang = user.get("lang", "en")
+
+        parts  = callback.data.split("_")
+        tariff = parts[2]
+        period = parts[3]
+
+        price, disc = get_discounted_price(uid, tariff, period)
+        period_name = PERIOD_NAMES.get(lang, PERIOD_NAMES["en"]).get(period, period)
+        tariff_name = TARIFF_NAMES.get(lang, TARIFF_NAMES["en"]).get(tariff, tariff)
+
+        payment_id = create_payment(uid, tariff, period, price)
+        await state.set_state(TariffS.waiting_check)
+        await state.update_data(payment_id=payment_id, tariff=tariff, period=period, lang=lang)
+
+        disc_text = f"\n🎁 Chegirma: -{disc}%" if disc else ""
+
+        import sys
+        main_module = sys.modules.get('__main__')
+        sett        = main_module.load_settings() if main_module and hasattr(main_module, 'load_settings') else {}
+        custom_req  = sett.get("custom_section_texts", {}).get("balance_requisite", {}).get(lang, "")
+        requisite   = custom_req if custom_req else PAYMENT_DETAILS.get(lang, PAYMENT_DETAILS["en"])
+
+        await callback.message.edit_text(
+            f"💳 {tariff_name} — {period_name}\n"
+            f"💰 Summa: {price:,} UZS{disc_text}\n\n"
+            f"{requisite}"
+        )
+
+    # ---- CHEK QABUL QILISH ----
+    @dp.message(TariffS.waiting_check)
+    async def handle_check(message: types.Message, state: FSMContext):
+        data = await state.get_data()
+        lang = data.get("lang", "en")
+
+        if not message.photo:
+            no_photo = {
+                "uz": "📸 Iltimos, chek rasmini yuboring.",
+                "en": "📸 Please send the receipt photo.",
+                "ru": "📸 Пожалуйста, отправьте фото чека.",
+                "ar": "📸 يرجى إرسال صورة الإيصال.",
+                "tr": "📸 Lütfen makbuz fotoğrafı gönderin.",
+                "es": "📸 Por favor envía la foto del recibo.",
+                "hi": "📸 कृपया रसीद की फ़ोटो भेजें।",
+            }
+            await message.answer(no_photo.get(lang, no_photo["en"]))
+            return
+
+        payment_id  = data.get("payment_id")
+        tariff      = data.get("tariff")
+        period      = data.get("period")
+        uid         = message.from_user.id
+        user        = get_user(uid)
+        file_id     = message.photo[-1].file_id
+
+        update_payment(payment_id, {"check_file_id": file_id, "status": "pending"})
+
+        tariff_name = TARIFF_NAMES.get(lang, TARIFF_NAMES["en"]).get(tariff, tariff)
+        period_name = PERIOD_NAMES.get(lang, PERIOD_NAMES["en"]).get(period, period)
+        price, _    = get_discounted_price(uid, tariff, period)
+
+        import sys
+        main_module = sys.modules.get('__main__')
+        sett        = main_module.load_settings() if main_module and hasattr(main_module, 'load_settings') else {}
+        custom_ch   = sett.get("custom_section_texts", {}).get("payment_channel_text", {}).get("uz", "")
+
+        channel_text = custom_ch.replace("{payment_id}", str(payment_id)).replace(
+            "{name}", user.get('name', '?')).replace("{uid}", str(uid)).replace(
+            "{username}", user.get('username', '—')).replace("{tariff}", tariff_name).replace(
+            "{period}", period_name).replace("{price}", f"{price:,}").replace(
+            "{time}", datetime.now().strftime('%d.%m.%Y %H:%M')) if custom_ch else (
+            f"💳 YANGI TO'LOV #{payment_id}\n\n"
+            f"👤 Foydalanuvchi: {user.get('name', '?')}\n"
+            f"🆔 ID: {uid}\n"
+            f"👤 Username: @{user.get('username', '—')}\n"
+            f"📦 Tarif: {tariff_name}\n"
+            f"📅 Davr: {period_name}\n"
+            f"💰 Summa: {price:,} UZS\n"
+            f"🕐 Vaqt: {datetime.now().strftime('%d.%m.%Y %H:%M')}"
+        )
+
+        await state.clear()
+
+        # Adminga tugmalar bilan
+        ch_msg = await bot.send_photo(
+            PAYMENT_CHANNEL,
+            file_id,
+            caption=channel_text,
+            reply_markup=channel_payment_kb(payment_id)
+        )
+
+        sent_msg = {
+            "uz": "✅ Chekingiz qabul qilindi!\nAdmin tekshirib tasdiqlagach, tarifingiz yoqiladi.",
+            "en": "✅ Receipt received!\nAfter admin confirms, your plan will be activated.",
+            "ru": "✅ Чек получен!\nПосле подтверждения администратора тариф будет активирован.",
+            "ar": "✅ تم استلام الإيصال!\nبعد تأكيد المشرف سيتم تفعيل باقتك.",
+            "tr": "✅ Makbuz alındı!\nAdmin onayladıktan sonra planınız aktif olacak.",
+            "es": "✅ ¡Recibo recibido!\nDespués de la confirmación del admin, tu plan se activará.",
+            "hi": "✅ रसीद प्राप्त हुई!\nएडमिन की पुष्टि के बाद आपकी योजना सक्रिय होगी।",
+        }
+        await message.answer(sent_msg.get(lang, sent_msg["en"]))
+
+    # ============================================================
+    # ADMIN TASDIQLASH — 1-BOSQICH
+    # tconf1_{payment_id} — yangi noyob prefix, hech qanday conflict yo'q
+    # ============================================================
+    @dp.callback_query(F.data.startswith("tconf1_"))
+    async def cb_tconf1(callback: types.CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            await callback.answer("❌ Ruxsat yo'q!", show_alert=True)
+            return
+
+        payment_id = int(callback.data.split("_")[1])
+        payment    = get_payment(payment_id)
+        if not payment:
+            await callback.answer("To'lov topilmadi!", show_alert=True)
+            return
+
+        # 2-bosqich tugmalarini chiqar
+        await callback.message.edit_reply_markup(
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="✅ Ha, tasdiqlayman",
+                    callback_data=f"tconf2_{payment_id}"
+                ),
+                InlineKeyboardButton(
+                    text="🔙 Orqaga",
+                    callback_data=f"tback_{payment_id}"
+                ),
+            ]])
+        )
+        await callback.answer("Haqiqatan tasdiqlaysizmi?", show_alert=True)
+
+    # ============================================================
+    # ADMIN TASDIQLASH — 2-BOSQICH
+    # ============================================================
+    @dp.callback_query(F.data.startswith("tconf2_"))
+    async def cb_tconf2(callback: types.CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            await callback.answer("❌ Ruxsat yo'q!", show_alert=True)
+            return
+
+        payment_id = int(callback.data.split("_")[1])
+        payment    = get_payment(payment_id)
+        if not payment:
+            await callback.answer("To'lov topilmadi!", show_alert=True)
+            return
+
+        uid    = payment["uid"]
+        tariff = payment["tariff"]
+        period = payment["period"]
+
+        set_subscription(uid, tariff, period)
+        update_payment(payment_id, {
+            "status":       "confirmed",
+            "confirmed_at": datetime.now().strftime("%Y-%m-%d %H:%M")
+        })
+
+        await callback.message.edit_caption(
+            caption=callback.message.caption + "\n\n✅ TASDIQLANDI",
+            reply_markup=None
+        )
+
+        user        = get_user(uid)
+        lang        = user.get("lang", "en")
+        tariff_name = TARIFF_NAMES.get(lang, TARIFF_NAMES["en"]).get(tariff, tariff)
+        period_name = PERIOD_NAMES.get(lang, PERIOD_NAMES["en"]).get(period, period)
+
+        import sys
+        main_module    = sys.modules.get('__main__')
+        sett           = main_module.load_settings() if main_module and hasattr(main_module, 'load_settings') else {}
+        custom_confirm = sett.get("custom_section_texts", {}).get("payment_confirm", {}).get(lang, "")
+
+        activated = {
+            "uz": custom_confirm or f"🎉 Tabriklaymiz!\n\n✅ {tariff_name} — {period_name} tarifi yoqildi!\nBotdan to'liq foydalanishingiz mumkin.",
+            "en": custom_confirm or f"🎉 Congratulations!\n\n✅ {tariff_name} — {period_name} plan activated!\nYou can now use all features.",
+            "ru": custom_confirm or f"🎉 Поздравляем!\n\n✅ {tariff_name} — {period_name} тариф активирован!\nМожете пользоваться всеми функциями.",
+            "ar": custom_confirm or f"🎉 تهانينا!\n\n✅ {tariff_name} — {period_name} تم تفعيل الباقة!",
+            "tr": custom_confirm or f"🎉 Tebrikler!\n\n✅ {tariff_name} — {period_name} planı aktif edildi!",
+            "es": custom_confirm or f"🎉 ¡Felicitaciones!\n\n✅ {tariff_name} — {period_name} plan activado!",
+            "hi": custom_confirm or f"🎉 बधाई हो!\n\n✅ {tariff_name} — {period_name} योजना सक्रिय!",
+        }
+        try:
+            await bot.send_message(uid, activated.get(lang, activated["en"]))
+        except:
+            pass
+        await callback.answer("✅ Tasdiqlandi!")
+
+    # ============================================================
+    # ADMIN BEKOR QILISH — 1-BOSQICH
+    # ============================================================
+    @dp.callback_query(F.data.startswith("tcanc1_"))
+    async def cb_tcanc1(callback: types.CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            await callback.answer("❌ Ruxsat yo'q!", show_alert=True)
+            return
+
+        payment_id = int(callback.data.split("_")[1])
+        payment    = get_payment(payment_id)
+        if not payment:
+            await callback.answer("To'lov topilmadi!", show_alert=True)
+            return
+
+        await callback.message.edit_reply_markup(
+            reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
+                InlineKeyboardButton(
+                    text="❌ Ha, bekor qilaman",
+                    callback_data=f"tcanc2_{payment_id}"
+                ),
+                InlineKeyboardButton(
+                    text="🔙 Orqaga",
+                    callback_data=f"tback_{payment_id}"
+                ),
+            ]])
+        )
+        await callback.answer("Haqiqatan bekor qilasizmi?", show_alert=True)
+
+    # ============================================================
+    # ADMIN BEKOR QILISH — 2-BOSQICH
+    # ============================================================
+    @dp.callback_query(F.data.startswith("tcanc2_"))
+    async def cb_tcanc2(callback: types.CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            await callback.answer("❌ Ruxsat yo'q!", show_alert=True)
+            return
+
+        payment_id = int(callback.data.split("_")[1])
+        payment    = get_payment(payment_id)
+        if not payment:
+            await callback.answer("To'lov topilmadi!", show_alert=True)
+            return
+
+        uid = payment["uid"]
+        update_payment(payment_id, {"status": "cancelled"})
+
+        await callback.message.edit_caption(
+            caption=callback.message.caption + "\n\n❌ BEKOR QILINDI",
+            reply_markup=None
+        )
+
+        user = get_user(uid)
+        lang = user.get("lang", "en")
+
+        import sys
+        main_module   = sys.modules.get('__main__')
+        sett          = main_module.load_settings() if main_module and hasattr(main_module, 'load_settings') else {}
+        custom_reject = sett.get("custom_section_texts", {}).get("payment_reject", {}).get(lang, "")
+
+        cancelled = {
+            "uz": custom_reject or "❌ To'lovingiz tasdiqlanmadi.\nIltimos, qayta urinib ko'ring yoki admin bilan bog'laning: @Rustamjonoff1",
+            "en": custom_reject or "❌ Your payment was not confirmed.\nPlease try again or contact admin: @Rustamjonoff1",
+            "ru": custom_reject or "❌ Ваш платёж не подтверждён.\nПопробуйте снова или свяжитесь с админом: @Rustamjonoff1",
+            "ar": custom_reject or "❌ لم يتم تأكيد دفعتك.\nحاول مرة أخرى أو تواصل مع المشرف: @Rustamjonoff1",
+            "tr": custom_reject or "❌ Ödemeniz onaylanmadı.\nTekrar deneyin veya admin ile iletişime geçin: @Rustamjonoff1",
+            "es": custom_reject or "❌ Tu pago no fue confirmado.\nIntenta de nuevo o contacta al admin: @Rustamjonoff1",
+            "hi": custom_reject or "❌ आपका भुगतान पुष्टि नहीं हुआ।\nफिर से प्रयास करें या एडमिन से संपर्क करें: @Rustamjonoff1",
+        }
+        try:
+            await bot.send_message(uid, cancelled.get(lang, cancelled["en"]))
+        except:
+            pass
+        await callback.answer("❌ Bekor qilindi!")
+
+    # ============================================================
+    # ADMIN ORQAGA
+    # ============================================================
+    @dp.callback_query(F.data.startswith("tback_"))
+    async def cb_tback(callback: types.CallbackQuery):
+        if callback.from_user.id != ADMIN_ID:
+            return
+        payment_id = int(callback.data.split("_")[1])
+        await callback.message.edit_reply_markup(
+            reply_markup=channel_payment_kb(payment_id)
+        )
+
+    # ---- FOYDALANUVCHI TUGMALARI ----
+    @dp.callback_query(F.data.startswith("pay_confirm_yes_"))
+    async def cb_pay_confirm_yes(callback: types.CallbackQuery):
+        await callback.answer("✅ So'rovingiz yuborildi!", show_alert=True)
+
+    @dp.callback_query(F.data.startswith("pay_confirm_no_"))
+    async def cb_pay_confirm_no(callback: types.CallbackQuery):
+        await callback.message.delete()
+
+    @dp.callback_query(F.data.startswith("pay_cancel_yes_"))
+    async def cb_pay_cancel_yes(callback: types.CallbackQuery):
+        payment_id = int(callback.data.split("_")[-1])
+        update_payment(payment_id, {"status": "cancelled"})
+        await callback.message.delete()
+
+    @dp.callback_query(F.data.startswith("pay_cancel_no_"))
+    async def cb_pay_cancel_no(callback: types.CallbackQuery):
+        await callback.message.delete()

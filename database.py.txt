@@ -1,0 +1,587 @@
+"""
+Start Daily Bot - Database
+SQLite ma'lumotlar bazasi
+"""
+
+import sqlite3
+import json
+from datetime import datetime, timedelta
+import os
+
+DB_FILE = "startdaily.db"
+
+def get_conn():
+    conn = sqlite3.connect(DB_FILE)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+# ============================================================
+# JADVALLAR YARATISH
+# ============================================================
+def init_db():
+    conn = get_conn()
+    c = conn.cursor()
+
+    # Foydalanuvchilar jadvali
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            uid             INTEGER PRIMARY KEY,
+            username        TEXT DEFAULT '',
+            name            TEXT DEFAULT '',
+            city            TEXT DEFAULT '',
+            lang            TEXT DEFAULT 'en',
+            joined          TEXT DEFAULT '',
+            last_active     TEXT DEFAULT '',
+            blocked         INTEGER DEFAULT 0,
+            warnings        INTEGER DEFAULT 0,
+            oferta_accepted INTEGER DEFAULT 0,
+            expenses        TEXT DEFAULT '[]',
+            plans           TEXT DEFAULT '{}',
+            reminders       TEXT DEFAULT '[]',
+            pending_reminder TEXT DEFAULT 'null',
+            balance         INTEGER DEFAULT 0
+        )
+    """)
+
+    # Tariflar jadvali
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            uid             INTEGER PRIMARY KEY,
+            tariff          TEXT DEFAULT 'free',
+            period          TEXT DEFAULT '',
+            started_at      TEXT DEFAULT '',
+            expires_at      TEXT DEFAULT '',
+            is_active       INTEGER DEFAULT 0,
+            FOREIGN KEY (uid) REFERENCES users(uid)
+        )
+    """)
+
+    # To'lovlar jadvali
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS payments (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            uid             INTEGER,
+            tariff          TEXT,
+            period          TEXT,
+            amount          REAL,
+            currency        TEXT DEFAULT 'UZS',
+            method          TEXT DEFAULT 'manual',
+            status          TEXT DEFAULT 'pending',
+            check_file_id   TEXT DEFAULT '',
+            channel_msg_id  INTEGER DEFAULT 0,
+            created_at      TEXT DEFAULT '',
+            confirmed_at    TEXT DEFAULT '',
+            FOREIGN KEY (uid) REFERENCES users(uid)
+        )
+    """)
+
+    # Referal jadvali
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS referrals (
+            uid             INTEGER PRIMARY KEY,
+            ref_code        TEXT UNIQUE,
+            referred_by     INTEGER DEFAULT 0,
+            total_refs      INTEGER DEFAULT 0,
+            month_refs      INTEGER DEFAULT 0,
+            carried_refs    INTEGER DEFAULT 0,
+            last_reset      TEXT DEFAULT '',
+            discount_standard REAL DEFAULT 0,
+            discount_premium  REAL DEFAULT 0,
+            FOREIGN KEY (uid) REFERENCES users(uid)
+        )
+    """)
+
+    # Referal harakatlari
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS referral_actions (
+            id              INTEGER PRIMARY KEY AUTOINCREMENT,
+            referrer_uid    INTEGER,
+            referred_uid    INTEGER,
+            created_at      TEXT DEFAULT '',
+            month           TEXT DEFAULT '',
+            FOREIGN KEY (referrer_uid) REFERENCES users(uid)
+        )
+    """)
+    # Bepul foydalanish tarixi
+    c.execute("""
+              CREATE TABLE IF NOT EXISTS free_usage
+              (
+                  uid
+                  INTEGER,
+                  func
+                  TEXT,
+                  used_at
+                  TEXT,
+                  PRIMARY
+                  KEY
+              (
+                  uid,
+                  func
+              )
+                  )
+              """)
+
+    # Alohida funksiya to'lovlari
+    c.execute("""
+              CREATE TABLE IF NOT EXISTS function_payments
+              (
+                  id
+                  INTEGER
+                  PRIMARY
+                  KEY
+                  AUTOINCREMENT,
+                  uid
+                  INTEGER,
+                  func
+                  TEXT,
+                  amount
+                  INTEGER
+                  DEFAULT
+                  3000,
+                  status TEXT DEFAULT 'pending',
+                  created_at TEXT DEFAULT ''
+            )
+        """)
+
+    conn.commit()
+    conn.close()
+
+# ============================================================
+# FOYDALANUVCHI FUNKSIYALARI
+# ============================================================
+def get_user(uid):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM users WHERE uid=?", (uid,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        user = dict(row)
+        user['expenses'] = json.loads(user['expenses'] or '[]')
+        user['plans']     = json.loads(user['plans'] or '{}')
+        user['reminders'] = json.loads(user['reminders'] or '[]')
+        user['pending_reminder'] = json.loads(user['pending_reminder'] or 'null')
+        return user
+    # Yangi foydalanuvchi
+    now = datetime.now().strftime("%Y-%m-%d")
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO users (uid, joined, last_active)
+        VALUES (?, ?, ?)
+    """, (uid, now, now))
+    conn.commit()
+    conn.close()
+    return get_user(uid)
+
+def update_user(uid, updates):
+    conn = get_conn()
+    c = conn.cursor()
+    for key, val in updates.items():
+        if isinstance(val, (dict, list)):
+            val = json.dumps(val, ensure_ascii=False)
+        c.execute(f"UPDATE users SET {key}=? WHERE uid=?", (val, uid))
+    conn.commit()
+    conn.close()
+
+def get_all_users():
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM users")
+    rows = c.fetchall()
+    conn.close()
+    result = []
+    for row in rows:
+        user = dict(row)
+        user['expenses']  = json.loads(user['expenses'] or '[]')
+        user['plans']     = json.loads(user['plans'] or '{}')
+        user['reminders'] = json.loads(user['reminders'] or '[]')
+        result.append(user)
+    return result
+
+# ============================================================
+# TARIF FUNKSIYALARI
+# ============================================================
+TARIFF_LIMITS = {
+    'free':     {'daily_requests': 0,  'ai_model': 'groq'},
+    'standard': {'daily_requests': 20, 'ai_model': 'gpt-4o-mini'},
+    'premium':  {'daily_requests': -1, 'ai_model': 'gpt-4o'},
+}
+
+# Har bir funksiya uchun narx (so'm)
+FUNCTION_PRICE = 3000
+
+# Bepul funksiyalar ro'yxati (bir marta ishlatish)
+FREE_FUNCTIONS = [
+    'image', 'present', 'referat', 'tezis', 'article',
+    'mustaqil', 'kurs', 'keys', 'resume', 'texmap',
+    'quiz', 'crossword', 'translate', 'essay', 'flashcard',
+    'convert', 'chat'
+]
+TARIFF_PRICES = {
+    'standard': {'monthly': 49900,  'yearly': 499900},
+    'premium':  {'monthly': 99900,  'yearly': 999900},
+}
+def get_subscription(uid):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM subscriptions WHERE uid=?", (uid,))
+    row = c.fetchone()
+    conn.close()
+    if not row:
+        return {'uid': uid, 'tariff': 'free', 'is_active': 0}
+    return dict(row)
+
+def set_subscription(uid, tariff, period):
+    now = datetime.now()
+    if period == 'monthly':
+        expires = (now + timedelta(days=30)).strftime("%Y-%m-%d %H:%M")
+    else:
+        expires = (now + timedelta(days=365)).strftime("%Y-%m-%d %H:%M")
+
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO subscriptions (uid, tariff, period, started_at, expires_at, is_active)
+        VALUES (?, ?, ?, ?, ?, 1)
+        ON CONFLICT(uid) DO UPDATE SET
+            tariff=excluded.tariff,
+            period=excluded.period,
+            started_at=excluded.started_at,
+            expires_at=excluded.expires_at,
+            is_active=1
+    """, (uid, tariff, period, now.strftime("%Y-%m-%d %H:%M"), expires))
+    conn.commit()
+    conn.close()
+
+def check_subscription(uid):
+    sub = get_subscription(uid)
+    if sub['tariff'] == 'free' or not sub.get('is_active'):
+        return 'free'
+    expires = datetime.strptime(sub['expires_at'], "%Y-%m-%d %H:%M")
+    if datetime.now() > expires:
+        # Muddati tugagan
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("UPDATE subscriptions SET is_active=0, tariff='free' WHERE uid=?", (uid,))
+        conn.commit()
+        conn.close()
+        return 'free'
+    return sub['tariff']
+
+def get_daily_requests(uid):
+    conn = get_conn()
+    c = conn.cursor()
+    today = datetime.now().strftime("%Y-%m-%d")
+    c.execute("""
+        SELECT COUNT(*) as cnt FROM payments
+        WHERE uid=? AND created_at LIKE ? AND status='used'
+    """, (uid, f"{today}%"))
+    row = c.fetchone()
+    conn.close()
+    return row['cnt'] if row else 0
+
+def can_use_ai(uid, feature):
+    tariff = check_subscription(uid)
+    limits = TARIFF_LIMITS.get(tariff, TARIFF_LIMITS['free'])
+    if limits['daily_requests'] == -1:
+        return True, tariff
+    used = get_daily_requests_ai(uid)
+    return used < limits['daily_requests'], tariff
+
+def get_daily_requests_ai(uid):
+    conn = get_conn()
+    c = conn.cursor()
+    today = datetime.now().strftime("%Y-%m-%d")
+    c.execute("""
+        SELECT COUNT(*) as cnt FROM payments
+        WHERE uid=? AND created_at LIKE ? AND method='ai_request'
+    """, (uid, f"{today}%"))
+    row = c.fetchone()
+    conn.close()
+    return row['cnt'] if row else 0
+
+def log_ai_request(uid):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO payments (uid, method, status, created_at)
+        VALUES (?, 'ai_request', 'used', ?)
+    """, (uid, datetime.now().strftime("%Y-%m-%d %H:%M")))
+    conn.commit()
+    conn.close()
+
+# ============================================================
+# TO'LOV FUNKSIYALARI
+# ============================================================
+def create_payment(uid, tariff, period, amount, currency='UZS', method='manual'):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO payments (uid, tariff, period, amount, currency, method, status, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)
+    """, (uid, tariff, period, amount, currency, method,
+          datetime.now().strftime("%Y-%m-%d %H:%M")))
+    payment_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return payment_id
+
+def update_payment(payment_id, updates):
+    conn = get_conn()
+    c = conn.cursor()
+    for key, val in updates.items():
+        c.execute(f"UPDATE payments SET {key}=? WHERE id=?", (val, payment_id))
+    conn.commit()
+    conn.close()
+
+def get_payment(payment_id):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM payments WHERE id=?", (payment_id,))
+    row = c.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+# ============================================================
+# REFERAL FUNKSIYALARI
+# ============================================================
+import hashlib
+
+def get_ref_code(uid):
+    return hashlib.md5(f"ref_{uid}_startdaily".encode()).hexdigest()[:8].upper()
+
+def get_referral(uid):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM referrals WHERE uid=?", (uid,))
+    row = c.fetchone()
+    conn.close()
+    if row:
+        return dict(row)
+    # Yangi referal yaratish
+    ref_code = get_ref_code(uid)
+    now = datetime.now().strftime("%Y-%m")
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO referrals (uid, ref_code, last_reset)
+        VALUES (?, ?, ?)
+    """, (uid, ref_code, now))
+    conn.commit()
+    conn.close()
+    return get_referral(uid)
+
+def add_referral(referrer_uid, referred_uid):
+    now = datetime.now()
+    month = now.strftime("%Y-%m")
+    conn = get_conn()
+    c = conn.cursor()
+
+    # Harakatni saqlash
+    c.execute("""
+        INSERT INTO referral_actions (referrer_uid, referred_uid, created_at, month)
+        VALUES (?, ?, ?, ?)
+    """, (referrer_uid, referred_uid, now.strftime("%Y-%m-%d %H:%M"), month))
+
+    # Referral hisobini yangilash
+    c.execute("SELECT * FROM referrals WHERE uid=?", (referrer_uid,))
+    ref = c.fetchone()
+
+    if ref:
+        month_refs    = ref['month_refs']
+        carried_refs  = ref['carried_refs']
+        last_reset    = ref['last_reset']
+        total_refs    = ref['total_refs'] + 1
+
+        # Yangi oy bo'lsa reset
+        if last_reset != month:
+            carried_refs = ref['month_refs'] - 10 if ref['month_refs'] > 10 else 0
+            month_refs   = carried_refs + 1
+            last_reset   = month
+        else:
+            month_refs += 1
+
+        # Chegirmani hisoblash
+        effective = min(month_refs, 10)
+        if effective >= 10:
+            dis_std  = 37
+            dis_prem = 10
+        elif effective >= 5:
+            dis_std  = 20
+            dis_prem = 5
+        else:
+            dis_std  = 0
+            dis_prem = 0
+
+        c.execute("""
+            UPDATE referrals SET
+                total_refs=?, month_refs=?, carried_refs=?,
+                last_reset=?, discount_standard=?, discount_premium=?
+            WHERE uid=?
+        """, (total_refs, month_refs, max(0, month_refs-10),
+              last_reset, dis_std, dis_prem, referrer_uid))
+
+    conn.commit()
+    conn.close()
+
+def get_discount(uid, tariff):
+    ref = get_referral(uid)
+    if tariff == 'standard':
+        return ref.get('discount_standard', 0)
+    elif tariff == 'premium':
+        return ref.get('discount_premium', 0)
+    return 0
+
+def get_discounted_price(uid, tariff, period):
+    base = TARIFF_PRICES.get(tariff, {}).get(period, 0)
+    discount = get_discount(uid, tariff)
+
+    # Yillik uchun chegirma kamroq
+    if period == 'yearly':
+        if tariff == 'standard':
+            discount = 10 if discount >= 37 else (10 if discount >= 20 else 0)
+        elif tariff == 'premium':
+            discount = 5 if discount >= 10 else (3 if discount >= 5 else 0)
+
+    final = base * (1 - discount / 100)
+    return int(final), discount
+
+# ============================================================
+# JSON DAN SQLite GA KO'CHIRISH (bir martalik)
+# ============================================================
+def migrate_from_json():
+    import os
+    if not os.path.exists("user_data.json"):
+        return
+    if os.path.exists("migration_done.txt"):
+        return
+
+    with open("user_data.json", "r", encoding="utf-8") as f:
+        old_data = json.load(f)
+
+    for uid_str, user in old_data.items():
+        uid = int(uid_str)
+        conn = get_conn()
+        c = conn.cursor()
+        c.execute("""
+            INSERT OR IGNORE INTO users
+            (uid, username, name, city, lang, joined, last_active,
+             blocked, warnings, oferta_accepted, expenses, plans, reminders)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)
+        """, (
+            uid,
+            user.get('username', ''),
+            user.get('name', ''),
+            user.get('city', ''),
+            user.get('lang', 'en'),
+            user.get('joined', ''),
+            user.get('last_active', ''),
+            1 if user.get('blocked') else 0,
+            user.get('warnings', 0),
+            1 if user.get('oferta_accepted') else 0,
+            json.dumps(user.get('expenses', []), ensure_ascii=False),
+            json.dumps(user.get('plans', {}), ensure_ascii=False),
+            json.dumps(user.get('reminders', []), ensure_ascii=False),
+        ))
+        conn.commit()
+        conn.close()
+
+    with open("migration_done.txt", "w") as f:
+        f.write("done")
+    print("✅ Migration tugadi")
+
+# ============================================================
+# ISHGA TUSHIRISH
+# ============================================================
+init_db()
+migrate_from_json()
+def has_free_usage(uid, func):
+    """Foydalanuvchi bu funksiyani bepul ishlatganmi?"""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT 1 FROM free_usage WHERE uid=? AND func=?", (uid, func))
+    row = c.fetchone()
+    conn.close()
+    return row is not None
+
+def mark_free_usage(uid, func):
+    """Bepul foydalanishni belgilash"""
+    conn = get_conn()
+    c = conn.cursor()
+    try:
+        c.execute(
+            "INSERT INTO free_usage (uid, func, used_at) VALUES (?, ?, ?)",
+            (uid, func, datetime.now().strftime("%Y-%m-%d %H:%M"))
+        )
+        conn.commit()
+    except:
+        pass
+    conn.close()
+
+def create_function_payment(uid, func):
+    """Alohida funksiya uchun to'lov yaratish"""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO function_payments (uid, func, amount, status, created_at)
+        VALUES (?, ?, 3000, 'pending', ?)
+    """, (uid, func, datetime.now().strftime("%Y-%m-%d %H:%M")))
+    payment_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return payment_id
+
+def confirm_function_payment(payment_id):
+    """Funksiya to'lovini tasdiqlash"""
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("UPDATE function_payments SET status='confirmed' WHERE id=?", (payment_id,))
+    conn.commit()
+    conn.close()
+
+def get_function_payment(payment_id):
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT * FROM function_payments WHERE id=?", (payment_id,))
+    row = c.fetchone()
+    conn.close()
+    return dict(row) if row else None
+def get_balance(uid):
+    conn = get_conn()
+    c = conn.cursor()
+    try:
+        c.execute("SELECT balance FROM users WHERE uid=?", (uid,))
+        row = c.fetchone()
+        conn.close()
+        return row[0] if row else 0
+    except:
+        conn.close()
+        return 0
+
+def add_balance(uid, amount):
+    conn = get_conn()
+    c = conn.cursor()
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN balance INTEGER DEFAULT 0")
+        conn.commit()
+    except:
+        pass
+    c.execute("UPDATE users SET balance = balance + ? WHERE uid=?", (amount, uid))
+    conn.commit()
+    conn.close()
+
+def deduct_balance(uid, amount):
+    conn = get_conn()
+    c = conn.cursor()
+    try:
+        c.execute("ALTER TABLE users ADD COLUMN balance INTEGER DEFAULT 0")
+        conn.commit()
+    except:
+        pass
+    c.execute("UPDATE users SET balance = balance - ? WHERE uid=?", (amount, uid))
+    conn.commit()
+    conn.close()
+
+def has_enough_balance(uid, amount=3000):
+    return get_balance(uid) >= amount
