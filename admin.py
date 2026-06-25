@@ -6,15 +6,16 @@ Faqat @Rustamjonoff1 uchun
 import json
 import os
 import asyncio
-from datetime import datetime
+from datetime import datetime, timedelta
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
+from database import get_all_users, update_user as db_update_user, get_user as db_get_user
 
 DATA_FILE     = "user_data.json"
 SETTINGS_FILE = "bot_settings.json"
-ADMIN_ID      = 5236920689
+ADMIN_ID      = int(os.getenv("ADMIN_ID", "5236920689"))
 
 LANGUAGES = {
     "uz": "🇺🇿 O'zbek", "en": "🇬🇧 English", "ru": "🇷🇺 Русский",
@@ -22,14 +23,9 @@ LANGUAGES = {
 }
 
 def load_data():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {}
-
-def save_data(data):
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=2)
+    # Foydalanuvchilar endi SQLite'da. Eski kod bilan moslik uchun
+    # {str(uid): user} ko'rinishidagi lug'at qaytaramiz.
+    return {str(u["uid"]): u for u in get_all_users()}
 
 def load_settings():
     if os.path.exists(SETTINGS_FILE):
@@ -42,11 +38,20 @@ def save_settings(s):
         json.dump(s, f, ensure_ascii=False, indent=2)
 
 def update_user(uid, updates):
-    data = load_data()
-    key  = str(uid)
-    if key in data:
-        data[key].update(updates)
-        save_data(data)
+    db_update_user(int(uid), updates)
+
+def resolve_uid(text):
+    """Admin kiritgan matndan uid topadi: raqam (ID) yoki @username."""
+    from database import find_uid_by_username
+    text = (text or "").strip()
+    if not text:
+        return None
+    if text.startswith("@") or not text.lstrip("-").isdigit():
+        return find_uid_by_username(text)
+    try:
+        return int(text)
+    except ValueError:
+        return None
 
 # ============================================================
 # KLAVIATURALAR
@@ -149,6 +154,9 @@ def register_admin_handlers(dp: Dispatcher, bot: Bot):
             new_month  = sum(1 for u in data.values() if u.get("joined","").startswith(this_month))
             today_str  = now.strftime("%Y-%m-%d")
             today_act  = sum(1 for u in data.values() if u.get("last_active","") == today_str)
+            week_ago   = (now - timedelta(days=7)).strftime("%Y-%m-%d")
+            week_act   = sum(1 for u in data.values() if u.get("last_active","") >= week_ago)
+            new_week   = sum(1 for u in data.values() if u.get("joined","") >= week_ago)
             langs = {}
             for u in data.values():
                 l = u.get("lang","en")
@@ -163,7 +171,9 @@ def register_admin_handlers(dp: Dispatcher, bot: Bot):
                 f"✅ Faol: {active}\n"
                 f"🚫 Bloklangan: {blocked}\n"
                 f"📅 Bugun faol: {today_act}\n"
-                f"🆕 Bu oy: {new_month}\n\n"
+                f"📆 Oxirgi 7 kun faol: {week_act}\n"
+                f"🆕 Bu hafta yangi: {new_week}\n"
+                f"🆕 Bu oy yangi: {new_month}\n\n"
                 f"🌍 Tillar:\n{lang_text}",
                 reply_markup=InlineKeyboardMarkup(inline_keyboard=[
                     [InlineKeyboardButton(text="🏙 Shaharlar", callback_data="adm_cities")],
@@ -676,21 +686,21 @@ def register_admin_handlers(dp: Dispatcher, bot: Bot):
         elif action == "warn":
             await state.set_state(AdminS.warn_user)
             await callback.message.answer(
-                "⚠️ Ogohlantirish yuborish\n\nFoydalanuvchi ID sini kiriting:"
+                "⚠️ Ogohlantirish yuborish\n\nFoydalanuvchi ID yoki @username kiriting:"
             )
 
         # ---- BLOKLASH ----
         elif action == "block":
             await state.set_state(AdminS.block_user)
             await callback.message.answer(
-                "🚫 Bloklash\n\nFoydalanuvchi ID sini kiriting:"
+                "🚫 Bloklash\n\nFoydalanuvchi ID yoki @username kiriting:"
             )
 
         # ---- BLOKDAN CHIQARISH ----
         elif action == "unblock":
             await state.set_state(AdminS.unblock_user)
             await callback.message.answer(
-                "✅ Blokdan chiqarish\n\nFoydalanuvchi ID sini kiriting:"
+                "✅ Blokdan chiqarish\n\nFoydalanuvchi ID yoki @username kiriting:"
             )
 
     # ============================================================
@@ -914,7 +924,10 @@ def register_admin_handlers(dp: Dispatcher, bot: Bot):
     async def adm_warn(message: types.Message, state: FSMContext):
         if message.from_user.id != ADMIN_ID: return
         try:
-            uid      = int(message.text.strip())
+            uid = resolve_uid(message.text)
+            if not uid:
+                await message.answer("❌ Foydalanuvchi topilmadi. ID yoki @username kiriting.")
+                return
             data     = load_data()
             user     = data.get(str(uid), {})
             lang     = user.get("lang", "en")
@@ -949,7 +962,10 @@ def register_admin_handlers(dp: Dispatcher, bot: Bot):
     async def adm_block(message: types.Message, state: FSMContext):
         if message.from_user.id != ADMIN_ID: return
         try:
-            uid  = int(message.text.strip())
+            uid = resolve_uid(message.text)
+            if not uid:
+                await message.answer("❌ Foydalanuvchi topilmadi. ID yoki @username kiriting.")
+                return
             data = load_data()
             user = data.get(str(uid), {})
             lang = user.get("lang", "en")
@@ -975,7 +991,10 @@ def register_admin_handlers(dp: Dispatcher, bot: Bot):
     async def adm_unblock(message: types.Message, state: FSMContext):
         if message.from_user.id != ADMIN_ID: return
         try:
-            uid  = int(message.text.strip())
+            uid = resolve_uid(message.text)
+            if not uid:
+                await message.answer("❌ Foydalanuvchi topilmadi. ID yoki @username kiriting.")
+                return
             data = load_data()
             user = data.get(str(uid), {})
             lang = user.get("lang", "en")

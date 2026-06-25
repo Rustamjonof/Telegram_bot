@@ -20,21 +20,28 @@ from aiogram.types import (
     InlineKeyboardMarkup, InlineKeyboardButton,
     BotCommand, BotCommandScopeDefault
 )
+from database import init_db, get_user, update_user, get_all_users
 # ============================================================
-# SOZLAMALAR
+# SOZLAMALAR  (server uchun environment variable orqali o'qiladi)
 # ============================================================
-BOT_TOKEN        = ""
-OPENWEATHER_API  = "9"
-EXCHANGERATE_API = "d"
-GROQ_API_KEY     = " "
-ADMIN_ID         = 5236920689
-ADMIN_USERNAME   = "@Rustamjonoff1"
+BOT_TOKEN        = os.getenv("BOT_TOKEN", "")
+OPENWEATHER_API  = os.getenv("OPENWEATHER_API", "")
+EXCHANGERATE_API = os.getenv("EXCHANGERATE_API", "")
+GROQ_API_KEY     = os.getenv("GROQ_API_KEY", "")
+ADMIN_ID         = int(os.getenv("ADMIN_ID", "5236920689"))
+ADMIN_USERNAME   = os.getenv("ADMIN_USERNAME", "@Rustamjonoff1")
 BOT_NAME         = "Start Daily"
 GROQ_MODEL       = "llama3-70b-8192"
 GROQ_URL         = "https://api.groq.com/openai/v1/chat/completions"
 ALADHAN_API      = "https://api.aladhan.com/v1"
 DATA_FILE        = "user_data.json"
 SETTINGS_FILE    = "bot_settings.json"
+
+if not BOT_TOKEN:
+    raise RuntimeError(
+        "BOT_TOKEN topilmadi! Environment variable o'rnating: "
+        "export BOT_TOKEN='...'"
+    )
 
 logging.basicConfig(level=logging.INFO)
 bot = Bot(token=BOT_TOKEN)
@@ -443,12 +450,6 @@ def parse_amount(s):
                 return float(num_str) * mult
             except:
                 pass
-        if word in s:
-            num_str = s.replace(word, "").strip()
-            try:
-                return float(num_str) * mult
-            except:
-                pass
     try:
         return float(s)
     except:
@@ -462,38 +463,12 @@ def normalize_currency(c):
 # ============================================================
 # MA'LUMOTLAR
 # ============================================================
+# Foydalanuvchi ma'lumotlari endi SQLite'da (database.py).
+# get_user / update_user / get_all_users — database.py dan import qilingan.
+# load_data() — eski kod (schedulerlar) bilan moslik uchun SQLite'dan
+# {str(uid): user} ko'rinishidagi lug'at qaytaradi.
 def load_data():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE,"r",encoding="utf-8") as f:
-            return json.load(f)
-    return {}
-
-def save_data(data):
-    with open(DATA_FILE,"w",encoding="utf-8") as f:
-        json.dump(data,f,ensure_ascii=False,indent=2)
-
-def get_user(uid):
-    data = load_data()
-    key  = str(uid)
-    if key not in data:
-        data[key] = {
-            "lang":"en","name":"","city":"","username":"",
-            "expenses":[],"plans":{},"reminders":[],
-            "joined":datetime.now().strftime("%Y-%m-%d"),
-            "blocked":False,"warnings":0,"oferta_accepted":False,
-            "last_active":datetime.now().strftime("%Y-%m-%d"),
-            "pending_reminder":None
-        }
-        save_data(data)
-    return data[key]
-
-def update_user(uid, updates):
-    data = load_data()
-    key  = str(uid)
-    if key not in data:
-        data[key] = {"lang":"en","expenses":[],"plans":{},"reminders":[],"warnings":0}
-    data[key].update(updates)
-    save_data(data)
+    return {str(u["uid"]): u for u in get_all_users()}
 
 def load_settings():
     default = {
@@ -1013,26 +988,6 @@ async def currency_template_handler(message: types.Message):
 }
     await message.answer(templates.get(lang, templates["en"]))
 
-    @dp.callback_query(F.data.startswith("conv_period_"))
-    async def cb_conv_period(callback: types.CallbackQuery, state: FSMContext):
-        uid = callback.from_user.id
-        user = get_user(uid)
-        lang = user.get("lang", "en")
-        period = callback.data.split("_")[2]
-        await state.update_data(conv_period=period)
-        await state.set_state(S.currency)
-        ask = {
-            "uz": "💱 Qaysi valyutaga o'girish kerak? Yozing: USD, dollar, so'm, euro...",
-        "en": "💱 Which currency to convert to? Write: USD, dollar, som, euro...",
-        "ru": "💱 В какую валюту? Напишите: USD, доллар, сум, евро...",
-        "ar": "💱 أي عملة؟ اكتب: USD, دولار, سوم...",
-        "tr": "💱 Hangi para birimi? Yazın: USD, dolar, som, euro...",
-        "es": "💱 ¿A qué moneda? Escriba: USD, dólar, som, euro...",
-        "hi": "💱 किस मुद्रा में?  लिखें: USD, dollar, som, euro...",
-        }
-        await callback.message.answer(ask.get(lang, ask["en"]))
-        await callback.answer()
-
 
 # ============================================================
 # ASOSIY ROUTER
@@ -1147,8 +1102,8 @@ async def handle_balance_check(message: types.Message, state: FSMContext, bot: B
         file_id,
         caption=channel_text,
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[[
-            InlineKeyboardButton(text="✓ Tasdiqlash", callback_data=f"tconf1_{payment_id}"),
-            InlineKeyboardButton(text="✗ Rad etish", callback_data=f"tcanc1_{payment_id}"),
+            InlineKeyboardButton(text="✓ Tasdiqlash", callback_data=f"bal_confirm_{payment_id}_{amount}_{uid}"),
+            InlineKeyboardButton(text="✗ Rad etish", callback_data=f"bal_reject_{payment_id}_{uid}"),
         ]])
     )
     update_payment(payment_id, {"channel_msg_id": ch_msg.message_id})
@@ -1240,12 +1195,8 @@ async def on_startup():
     asyncio.create_task(morning_quotes_scheduler())
     asyncio.create_task(weekly_report_scheduler())
     asyncio.create_task(scheduled_ads_checker())
-
-    async def on_startup():
-        asyncio.create_task(morning_quotes_scheduler())
-        asyncio.create_task(weekly_report_scheduler())
-        asyncio.create_task(scheduled_ads_checker())
-        asyncio.create_task(evening_report_scheduler())  # ← shu qatorni qo'shing
+    asyncio.create_task(evening_report_scheduler())
+    asyncio.create_task(restore_reminders())
 
 
 dp.startup.register(on_startup)
@@ -1281,7 +1232,6 @@ async def handle_currency(message: types.Message, state: FSMContext):
         await currency_input(message, lang)
         return
     period = data.get("conv_period", "month")
-    print(f"PERIOD: {period}")
 
     to_curr = normalize_currency(message.text.strip())
     expenses = user.get("expenses", [])
@@ -1315,37 +1265,36 @@ async def handle_currency(message: types.Message, state: FSMContext):
     for e in filtered:
         c = e.get("currency", "UZS")
         by_curr[c] = by_curr.get(c, 0) + e["amount"]
-        try:
-            async with aiohttp.ClientSession() as session:
-                async with session.get(
-                        "https://api.exchangerate-api.com/v4/latest/" + to_curr
-                ) as r:
-                    rate_data = await r.json()
 
-            rates = rate_data.get("rates", {})
-            text = "💱 " + label + " → " + to_curr + "\n\n"
-            total = 0
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                    "https://api.exchangerate-api.com/v4/latest/" + to_curr
+            ) as r:
+                rate_data = await r.json()
+        rates = rate_data.get("rates", {})
+        if not rates:
+            raise Exception("no rates")
 
-            for c, amt in by_curr.items():
-                if c == to_curr:
-                    conv = amt
-                elif c in rates and to_curr in rates:
-                    conv = amt / rates.get(c, 1) * rates.get(to_curr, 1)
-                else:
-                    conv = 0
+        text  = "💱 " + label + " → " + to_curr + "\n\n"
+        total = 0
+        for c, amt in by_curr.items():
+            if c == to_curr:
+                conv = amt
+            elif c in rates:
+                # baza = to_curr, demak rates[c] = 1 to_curr uchun nechta c
+                conv = amt / rates.get(c, 1)
+            else:
+                conv = 0
+            total += conv
+            text += f"▪️ {fmt(amt)} {c} = {round(conv, 2):,} {to_curr}\n"
+        text += f"\n💰 Jami: {round(total, 2):,} {to_curr}"
+        await message.answer(text, reply_markup=back_kb(lang))
+    except:
+        await message.answer("✗ Xatolik. Valyuta nomini tekshiring.", reply_markup=back_kb(lang))
 
-                total += conv
-                text += f"▪️ {int(amt)} {c} = {round(conv, 2)} {to_curr}\n"
-
-            text += f"\n💰 Jami: {round(total, 2)} {to_curr}"
-
-            await message.answer(text)
-
-        except:
-            await message.answer("✗ Xatolik. Valyuta nomini tekshiring.")
-
-        await state.update_data(convert_mode=False)
-        await state.set_state(S.expense)
+    await state.update_data(convert_mode=False)
+    await state.set_state(S.expense)
 
 
 @dp.message(StateFilter(S.expense))
@@ -1606,7 +1555,7 @@ async def router(message: types.Message, state: FSMContext):
             text_out = (
                 f"{REF_TEXTS['title'].get(lang, '')}\n\n"
                 f"{REF_TEXTS['your_link'].get(lang, '')}\n"
-                f"{link}\n\n"
+                f"`{link}`\n\n"
                 f"{REF_TEXTS['your_stats'].get(lang, '')}\n"
                 f"👥 {REF_TEXTS['total_refs'].get(lang, '')}: {ref.get('total_refs', 0)}\n"
                 f"📅 {REF_TEXTS['month_refs'].get(lang, '')}: {ref.get('month_refs', 0)}"
@@ -1818,17 +1767,33 @@ async def show_expense_menu(message, user, lang):
         return custom_e.get(key, {}).get(lang, default)
 
     await message.answer(text, reply_markup=back_kb(lang))
+    exp_btn_labels = {
+        "uz": ["📅 Bugun", "📆 Hafta", "🗓 Oy", "📊 Yil", "💱 Konvertatsiya", "🗑 Tozalash"],
+        "en": ["📅 Today", "📆 Week", "🗓 Month", "📊 Year", "💱 Convert", "🗑 Clear"],
+        "ru": ["📅 Сегодня", "📆 Неделя", "🗓 Месяц", "📊 Год", "💱 Конвертация", "🗑 Очистить"],
+        "ar": ["📅 اليوم", "📆 الأسبوع", "🗓 الشهر", "📊 السنة", "💱 تحويل", "🗑 مسح"],
+        "tr": ["📅 Bugün", "📆 Hafta", "🗓 Ay", "📊 Yıl", "💱 Dönüştür", "🗑 Temizle"],
+        "es": ["📅 Hoy", "📆 Semana", "🗓 Mes", "📊 Año", "💱 Convertir", "🗑 Limpiar"],
+        "hi": ["📅 आज", "📆 सप्ताह", "🗓 महीना", "📊 वर्ष", "💱 कनवर्ट", "🗑 साफ़ करें"],
+    }
+    el = exp_btn_labels.get(lang, exp_btn_labels["en"])
+    report_title = {
+        "uz": "📊 Hisobot turini tanlang:", "en": "📊 Choose a report:", "ru": "📊 Выберите отчёт:",
+        "ar": "📊 اختر التقرير:", "tr": "📊 Rapor seçin:", "es": "📊 Elige un informe:", "hi": "📊 रिपोर्ट चुनें:",
+    }
     await message.answer(
-        "▪",
+        report_title.get(lang, report_title["en"]),
         reply_markup=InlineKeyboardMarkup(inline_keyboard=[
             [
-                InlineKeyboardButton(text=gbtn_e("btn_exp_today", "📅"), callback_data="ex_today"),
-                InlineKeyboardButton(text=gbtn_e("btn_exp_week", "📆"), callback_data="ex_week"),
-                InlineKeyboardButton(text=gbtn_e("btn_exp_month", "🗓"), callback_data="ex_month"),
-                InlineKeyboardButton(text=gbtn_e("btn_exp_year", "▪"), callback_data="ex_year"),
+                InlineKeyboardButton(text=gbtn_e("btn_exp_today", el[0]), callback_data="ex_today"),
+                InlineKeyboardButton(text=gbtn_e("btn_exp_week", el[1]), callback_data="ex_week"),
             ],
-            [InlineKeyboardButton(text=gbtn_e("btn_exp_convert", "💱"), callback_data="ex_convert")],
-            [InlineKeyboardButton(text=gbtn_e("btn_exp_clear", "🗑"), callback_data="ex_clear")],
+            [
+                InlineKeyboardButton(text=gbtn_e("btn_exp_month", el[2]), callback_data="ex_month"),
+                InlineKeyboardButton(text=gbtn_e("btn_exp_year", el[3]), callback_data="ex_year"),
+            ],
+            [InlineKeyboardButton(text=gbtn_e("btn_exp_convert", el[4]), callback_data="ex_convert")],
+            [InlineKeyboardButton(text=gbtn_e("btn_exp_clear", el[5]), callback_data="ex_clear")],
         ])
     )
 
@@ -1911,8 +1876,7 @@ async def expense_input(message, user, lang):
         today   = datetime.now().strftime("%Y-%m-%d")
         result  = ""
         for name, amount, currency in added:
-            nl = " "
-            result += "✓ " + name + " — " + fmt(amount) + " " + currency + nl
+            result += "✓ " + name + " — " + fmt(amount) + " " + currency + "\n"
         by_curr = {}
         for e in expenses:
             if e.get("date", "").startswith(today):
@@ -1920,7 +1884,6 @@ async def expense_input(message, user, lang):
                 by_curr[c] = by_curr.get(c, 0) + e["amount"]
 
         if by_curr:
-            result += ""
             today_label = {
                 "uz": "▪ Bugun jami:",
                 "en": "▪ Today total:",
@@ -1930,13 +1893,10 @@ async def expense_input(message, user, lang):
                 "es": "▪ Total hoy:",
                 "hi": "▪ आज कुल:",
             }
-            result += "" + today_label.get(lang, today_label["en"]) + ""
-
+            result += "\n" + today_label.get(lang, today_label["en"]) + "\n"
             for c, total in by_curr.items():
-                nl = " "
-                result += "▪️ " + fmt(total) + " " + c + nl
-            nl =" "
-        result += nl + t("stay_hint", lang)
+                result += "▪️ " + fmt(total) + " " + c + "\n"
+        result += "\n" + t("stay_hint", lang)
         await message.answer(result, reply_markup=back_kb(lang))
 
     except Exception as e:
@@ -2002,21 +1962,32 @@ async def cb_expense(callback: types.CallbackQuery, state: FSMContext):
 
         return
 
+    lang = user.get("lang", "en")
+    period_names = {
+        "today": {"uz":"📅 Bugun","en":"📅 Today","ru":"📅 Сегодня","ar":"📅 اليوم","tr":"📅 Bugün","es":"📅 Hoy","hi":"📅 आज"},
+        "week":  {"uz":"📆 Hafta","en":"📆 Week","ru":"📆 Неделя","ar":"📆 الأسبوع","tr":"📆 Hafta","es":"📆 Semana","hi":"📆 सप्ताह"},
+        "month": {"uz":"🗓 Oy","en":"🗓 Month","ru":"🗓 Месяц","ar":"🗓 الشهر","tr":"🗓 Ay","es":"🗓 Mes","hi":"🗓 महीना"},
+        "year":  {"uz":"📊 Yil","en":"📊 Year","ru":"📊 Год","ar":"📊 السنة","tr":"📊 Yıl","es":"📊 Año","hi":"📊 वर्ष"},
+    }
     if action == "today":
         filtered = [e for e in expenses if e.get("date","").startswith(now.strftime("%Y-%m-%d"))]
-        label = "📅"
+        pkey = "today"
     elif action == "week":
         filtered = [e for e in expenses if e.get("date","")>=(now-timedelta(days=7)).strftime("%Y-%m-%d")]
-        label = "📆"
+        pkey = "week"
     elif action == "month":
         filtered = [e for e in expenses if e.get("date","").startswith(now.strftime("%Y-%m"))]
-        label = "🗓"
+        pkey = "month"
     else:
         filtered = [e for e in expenses if e.get("date","").startswith(now.strftime("%Y"))]
-        label = "📊"
+        pkey = "year"
+    label = period_names[pkey].get(lang, period_names[pkey]["en"])
+
+    records_label = {"uz":"Yozuvlar","en":"Records","ru":"Записей","ar":"السجلات","tr":"Kayıtlar","es":"Registros","hi":"रिकॉर्ड"}
+    empty_label = {"uz":"Xarajatlar yo'q","en":"No expenses","ru":"Нет расходов","ar":"لا مصروفات","tr":"Harcama yok","es":"Sin gastos","hi":"कोई खर्च नहीं"}
 
     if not filtered:
-        await callback.message.edit_text(f"{label} 0")
+        await callback.message.edit_text(f"{label}\n\n{empty_label.get(lang, empty_label['en'])}")
         return
 
     by_curr = {}
@@ -2024,10 +1995,10 @@ async def cb_expense(callback: types.CallbackQuery, state: FSMContext):
         c = e.get("currency","UZS")
         by_curr[c] = by_curr.get(c,0)+e["amount"]
 
-    text = f"{label}\n"
+    text = f"{label}\n\n"
     for c,total in by_curr.items():
-        text += "▪️ " + f"{total:,.0f}".replace(",", " ") + " " + c + ""
-    text += f"\n{len(filtered)}\n\n"
+        text += "▪️ " + f"{total:,.0f}".replace(",", " ") + " " + c + "\n"
+    text += f"\n{records_label.get(lang, records_label['en'])}: {len(filtered)}\n\n"
     for e in filtered[-5:]:
         text += f"• {e['name']}: {e['amount']:,.0f} {e.get('currency','UZS')} — {e['date'][:10]}\n"
     await callback.message.edit_text(text)
@@ -2046,22 +2017,23 @@ async def cb_conv(callback: types.CallbackQuery):
         by_curr[c] = by_curr.get(c, 0) + e["amount"]
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.get("https://api.exchangerate-api.com/v4/latest/USD") as r:
+            async with session.get("https://api.exchangerate-api.com/v4/latest/" + to_curr) as r:
                 rate_data = await r.json()
         rates = rate_data.get("rates", {})
-        text  = "💱 Oy → " + to_curr + ""
+        if not rates:
+            raise Exception("no rates")
+        text  = "💱 Oy → " + to_curr + "\n\n"
         total = 0
         for c, amt in by_curr.items():
             if c == to_curr:
                 conv = amt
-            elif c in rates and to_curr in rates:
-                usd_amount = amt / rates.get(c, 1)
-                conv = usd_amount * rates.get(to_curr, 1)
+            elif c in rates:
+                conv = amt / rates.get(c, 1)
             else:
                 conv = 0
             total += conv
-            text = text + "▪️ " + fmt(amt) + " " + c + " = " + fmt(conv) + " " + to_curr +""
-            text = text + "💰 Jami: " + fmt(total) + " " + to_curr
+            text += "▪️ " + fmt(amt) + " " + c + " = " + fmt(conv) + " " + to_curr + "\n"
+        text += "\n💰 Jami: " + fmt(total) + " " + to_curr
         await callback.message.answer(text)
     except:
         await callback.answer("✗ Xatolik", show_alert=True)
@@ -2356,6 +2328,56 @@ async def schedule_reminder(chat_id, hour, minute, text, lang="en", repeat=False
         await asyncio.sleep(30)
 
 
+async def restore_reminders():
+    """Bot qayta ishga tushganda SQLite'dagi eslatma va bugungi rejalarni
+    qayta rejalashtiradi (aks holda restart'dan keyin yuborilmaydi)."""
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    for user in get_all_users():
+        if user.get("blocked"):
+            continue
+        uid  = user["uid"]
+        lang = user.get("lang", "en")
+
+        # Saqlangan eslatmalar
+        for r in user.get("reminders", []):
+            try:
+                hour   = int(r.get("hour", 9))
+                minute = int(r.get("minute", 0))
+            except (TypeError, ValueError):
+                continue
+            repeat  = bool(r.get("repeat"))
+            chat_id = r.get("chat_id", uid)
+            text    = r.get("text", "")
+            # Bir martalik bo'lib, vaqti o'tib ketgan bo'lsa — o'tkazamiz
+            if not repeat:
+                try:
+                    dt = datetime.strptime(r.get("datetime", ""), "%d.%m.%Y %H:%M")
+                    if dt < now:
+                        continue
+                except (ValueError, TypeError):
+                    pass
+            asyncio.create_task(
+                schedule_reminder(chat_id, hour, minute, text, lang=lang, repeat=repeat)
+            )
+
+        # Bugungi rejalar (faqat hali vaqti kelmaganlari)
+        plans = user.get("plans", {})
+        if isinstance(plans, dict):
+            for p in plans.get(today, []):
+                tm = p.get("time")
+                if tm and ":" in str(tm):
+                    try:
+                        h, m = map(int, str(tm).split(":"))
+                    except ValueError:
+                        continue
+                    if (h, m) <= (now.hour, now.minute):
+                        continue  # bugun allaqachon o'tgan
+                    asyncio.create_task(
+                        schedule_reminder(uid, h, m, f"📅 {p.get('task','')}", lang=lang)
+                    )
+
+
 # ============================================================
 # OB-HAVO
 # ============================================================
@@ -2546,23 +2568,23 @@ async def scheduled_ads_checker():
 
 async def evening_report_scheduler():
     while True:
-        now      = datetime.now()
-        settings = load_settings()
+        now = datetime.now()
         if now.hour == 21 and now.minute == 0:
-            data = load_data()
-            for uid, user in data.items():
-                if user.get("blocked"): continue
-                lang     = user.get("lang", "en")
-                today    = now.strftime("%Y-%m-%d")
+            today = now.strftime("%Y-%m-%d")
+            for user in get_all_users():
+                if user.get("blocked"):
+                    continue
+                uid  = user["uid"]
+                lang = user.get("lang", "en")
                 expenses = user.get("expenses", [])
                 plans    = user.get("plans", {})
-                if isinstance(plans, list): plans = {}
+                if isinstance(plans, list):
+                    plans = {}
 
                 today_exp   = [e for e in expenses if e.get("date", "").startswith(today)]
                 today_plans = plans.get(today, [])
 
                 if not today_exp and not today_plans:
-                    await asyncio.sleep(30)
                     continue
 
                 by_curr = {}
@@ -2573,26 +2595,25 @@ async def evening_report_scheduler():
                 done  = sum(1 for p in today_plans if p.get("done"))
                 total = len(today_plans)
 
-        if by_curr:
-            exp_text = ""
-        for c, v in by_curr.items():
+                if by_curr:
+                    exp_text = "\n".join(f"▪️ {v:,.0f} {c}" for c, v in by_curr.items())
+                else:
+                    exp_text = "—"
 
-            exp_text += f"▪️ {v:,.0f} {c}"
-        else:
-         exp_text = "—"
-        report = {
-                    "uz": f"🌙 Kunlik hisobot💸 Bugungi xarajatlar:{exp_text}▪ Vazifalar: {done}/{total} ✓",
-                    "en": f"🌙 Daily Report💸 Today's expenses:{exp_text}▪ Tasks: {done}/{total} ✓",
-                    "ru": f"🌙 Дневной отчёт💸 Расходы сегодня:{exp_text}▪ Задачи: {done}/{total} ✓",
-                    "ar": f"🌙 التقرير اليومي💸 مصروفات اليوم:{exp_text}▪ المهام: {done}/{total} ✓",
-                    "tr": f"🌙 Günlük Rapor💸 Bugünkü harcamalar:{exp_text}▪ Görevler: {done}/{total} ✓",
-                    "es": f"🌙 Informe Diario💸 Gastos de hoy:{exp_text}▪ Tareas: {done}/{total} ✓",
-                    "hi": f"🌙 दैनिक रिपोर्ट💸 आज के खर्च:{exp_text}▪ कार्य: {done}/{total} ✓",
+                report = {
+                    "uz": f"🌙 Kunlik hisobot\n\n💸 Bugungi xarajatlar:\n{exp_text}\n\n📋 Vazifalar: {done}/{total} ✓",
+                    "en": f"🌙 Daily Report\n\n💸 Today's expenses:\n{exp_text}\n\n📋 Tasks: {done}/{total} ✓",
+                    "ru": f"🌙 Дневной отчёт\n\n💸 Расходы сегодня:\n{exp_text}\n\n📋 Задачи: {done}/{total} ✓",
+                    "ar": f"🌙 التقرير اليومي\n\n💸 مصروفات اليوم:\n{exp_text}\n\n📋 المهام: {done}/{total} ✓",
+                    "tr": f"🌙 Günlük Rapor\n\n💸 Bugünkü harcamalar:\n{exp_text}\n\n📋 Görevler: {done}/{total} ✓",
+                    "es": f"🌙 Informe Diario\n\n💸 Gastos de hoy:\n{exp_text}\n\n📋 Tareas: {done}/{total} ✓",
+                    "hi": f"🌙 दैनिक रिपोर्ट\n\n💸 आज के खर्च:\n{exp_text}\n\n📋 कार्य: {done}/{total} ✓",
                 }
-        try:
-                 await bot.send_message(int(uid), report.get(lang, report["en"]))
-        except:
-            pass
+                try:
+                    await bot.send_message(int(uid), report.get(lang, report["en"]))
+                except:
+                    pass
+                await asyncio.sleep(0.05)
             await asyncio.sleep(61)
         await asyncio.sleep(30)
 # ============================================================

@@ -15,9 +15,9 @@ import os
 import json
 from datetime import datetime
 
-ADMIN_ID         = 5236920689
-PAYMENT_CHANNEL  = -1003968636090
-BOT_USERNAME     = "Startdaily_bot"
+ADMIN_ID         = int(os.getenv("ADMIN_ID", "5236920689"))
+PAYMENT_CHANNEL  = int(os.getenv("PAYMENT_CHANNEL", "-1003968636090"))
+BOT_USERNAME     = os.getenv("BOT_USERNAME", "Startdaily_bot")
 
 TARIFF_NAMES = {
     "uz": {"free": "🆓 Bepul",      "standard": "⭐ Standart", "premium": "💎 Premium"},

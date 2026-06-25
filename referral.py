@@ -11,9 +11,10 @@ from database import (
 )
 from datetime import datetime
 import sys
+import os
 
-ADMIN_ID     = 5236920689
-BOT_USERNAME = "Startdaily_bot"
+ADMIN_ID     = int(os.getenv("ADMIN_ID", "5236920689"))
+BOT_USERNAME = os.getenv("BOT_USERNAME", "Startdaily_bot")
 
 # ============================================================
 # TARJIMALAR
@@ -302,7 +303,7 @@ def register_referral_handlers(dp, bot):
         text = (
             f"{REF_TEXTS['title'].get(lang,'')}\n\n"
             f"{REF_TEXTS['your_link'].get(lang,'')}\n"
-            f"{link}`\n\n"
+            f"`{link}`\n\n"
             f"{REF_TEXTS['your_stats'].get(lang,'')}\n"
             f"👥 {REF_TEXTS['total_refs'].get(lang,'')}: {ref.get('total_refs', 0)}\n"
             f"📅 {REF_TEXTS['month_refs'].get(lang,'')}: {ref.get('month_refs', 0)}"
