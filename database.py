@@ -199,6 +199,20 @@ def get_all_users():
         result.append(user)
     return result
 
+def find_uid_by_username(username):
+    """@username yoki username bo'yicha foydalanuvchi uid sini topadi."""
+    if not username:
+        return None
+    username = str(username).strip().lstrip("@").lower()
+    if not username:
+        return None
+    conn = get_conn()
+    c = conn.cursor()
+    c.execute("SELECT uid FROM users WHERE lower(username)=?", (username,))
+    row = c.fetchone()
+    conn.close()
+    return row[0] if row else None
+
 # ============================================================
 # TARIF FUNKSIYALARI
 # ============================================================

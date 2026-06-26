@@ -13,7 +13,9 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from database import (
     update_user, check_subscription,
-    can_use_ai, log_ai_request, TARIFF_LIMITS
+    can_use_ai, log_ai_request, TARIFF_LIMITS,
+    has_free_usage, mark_free_usage,
+    has_enough_balance, deduct_balance, get_balance
 )
 import importlib
 import sys
@@ -25,9 +27,9 @@ def get_user(uid):
     from database import get_user as db_get_user
     return db_get_user(uid)
 
-ADMIN_ID      = 5236920689
-OPENAI_API    = ""        # OpenAI API keyingizni yozing
-GROQ_API_KEY  = ""        # Groq API keyingizni yozing
+ADMIN_ID      = int(os.getenv("ADMIN_ID", "5236920689"))
+OPENAI_API    = os.getenv("OPENAI_API", "")        # OpenAI API kaliti (env)
+GROQ_API_KEY  = os.getenv("GROQ_API_KEY", "")      # Groq API kaliti (env)
 GROQ_MODEL    = "llama3-70b-8192"
 GROQ_URL      = "https://api.groq.com/openai/v1/chat/completions"
 OPENAI_URL    = "https://api.openai.com/v1/chat/completions"
@@ -329,6 +331,15 @@ def ai_menu_kb(lang):
     )])
     return InlineKeyboardMarkup(inline_keyboard=btns)
 
+def back_to_ai_kb(lang):
+    """AI funksiyasi ichidan AI menyusiga qaytish tugmasi."""
+    return InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text=BACK_BTN.get(lang, "🔙 Back"),
+            callback_data="ai_menu"
+        )
+    ]])
+
 # ============================================================
 # AI MODEL TANLASH
 # ============================================================
@@ -403,6 +414,29 @@ async def get_ai_response(prompt, system, tariff, lang):
         ) as r:
             data = await r.json()
     return data["choices"][0]["message"]["content"]
+
+
+# ============================================================
+# RASM GENERATSIYA (DALL-E 3)
+# ============================================================
+async def generate_image(prompt):
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            DALLE_URL,
+            headers={
+                "Authorization": f"Bearer {OPENAI_API}",
+                "Content-Type": "application/json"
+            },
+            json={
+                "model": "dall-e-3",
+                "prompt": prompt,
+                "n": 1,
+                "size": "1024x1024",
+                "quality": "standard"
+            }
+        ) as r:
+            data = await r.json()
+    return data["data"][0]["url"]
 
 
 # ============================================================
@@ -741,64 +775,41 @@ def register_ai_handlers(dp, bot):
 
             tariff = check_subscription(uid)
 
-            if func == "image" and tariff == "free":
-                from database import has_free_usage, mark_free_usage
-                if not has_free_usage(uid, "image"):
-                    mark_free_usage(uid, "image")
-                else:
-                    import json, os
-                    sett = {}
-                    if os.path.exists("bot_settings.json"):
-                        with open("bot_settings.json", "r", encoding="utf-8") as f:
-                            sett = json.load(f)
-                    from database import get_balance
-                    bal = get_balance(uid)
-                    custom_pay_msg = sett.get("custom_section_texts", {}).get("ai_pay_msg", {}).get(lang, "")
-                    default_pay_msg = {
-                        "uz": f"💳 Bu funksiyadan bepul foydalandingiz.\n\nBalansingiz: {bal:,} so'm\nKeyingi foydalanish: 3,000 so'm\n\n💰 Balansni to'ldiring yoki 💎 tarif sotib oling.",
-                        "en": f"💳 You've used the free trial.\n\nBalance: {bal:,} UZS\nNext use: 3,000 UZS\n\n💰 Top up balance or 💎 buy subscription.",
-                        "ru": f"💳 Вы использовали бесплатный период.\n\nБаланс: {bal:,} UZS\nСледующее: 3,000 UZS\n\n💰 Пополните баланс или 💎 купите подписку.",
-                        "ar": f"💳 استخدمت الفترة المجانية.\n\nالرصيد: {bal:,} UZS\nالتالي: 3,000 UZS\n\n💰 اشحن الرصيد أو 💎 اشترِ اشتراكاً.",
-                        "tr": f"💳 Ücretsiz denemeyi kullandınız.\n\nBakiye: {bal:,} UZS\nSonraki: 3,000 UZS\n\n💰 Bakiye yükleyin veya 💎 abonelik alın.",
-                        "es": f"💳 Usaste la prueba gratuita.\n\nSaldo: {bal:,} UZS\nSiguiente: 3,000 UZS\n\n💰 Recarga o 💎 compra suscripción.",
-                        "hi": f"💳 मुफ्त परीक्षण उपयोग किया।\n\nबैलेंस: {bal:,} UZS\nअगला: 3,000 UZS\n\n💰 बैलेंस भरें या 💎 सदस्यता खरीदें।",
-                    }
-                    final_msg = custom_pay_msg.replace("{bal}", str(bal)) if custom_pay_msg else default_pay_msg.get(
-                        lang, default_pay_msg["en"])
-                    await callback.answer(final_msg, show_alert=True)
+            def pay_required_msg():
+                bal = get_balance(uid)
+                import sys
+                main_module = sys.modules.get('__main__')
+                sett = main_module.load_settings() if main_module and hasattr(main_module, 'load_settings') else {}
+                custom_pay = sett.get("custom_section_texts", {}).get("ai_pay_msg", {}).get(lang, "")
+                default_pay = {
+                    "uz": f"💳 Bu funksiyadan bepul foydalandingiz.\n\nBalansingiz: {bal:,} so'm\nKeyingi foydalanish: 3,000 so'm\n\n💰 Balansni to'ldiring yoki 💎 tarif sotib oling.",
+                    "en": f"💳 You've used the free trial.\n\nBalance: {bal:,} UZS\nNext use: 3,000 UZS\n\n💰 Top up balance or 💎 buy subscription.",
+                    "ru": f"💳 Вы использовали бесплатный период.\n\nБаланс: {bal:,} UZS\nСледующее: 3,000 UZS\n\n💰 Пополните баланс или 💎 купите подписку.",
+                    "ar": f"💳 استخدمت الفترة المجانية.\n\nالرصيد: {bal:,} UZS\nالتالي: 3,000 UZS\n\n💰 اشحن الرصيد أو 💎 اشترِ اشتراكاً.",
+                    "tr": f"💳 Ücretsiz denemeyi kullandınız.\n\nBakiye: {bal:,} UZS\nSonraki: 3,000 UZS\n\n💰 Bakiye yükleyin veya 💎 abonelik alın.",
+                    "es": f"💳 Usaste la prueba gratuita.\n\nSaldo: {bal:,} UZS\nSiguiente: 3,000 UZS\n\n💰 Recarga o 💎 compra suscripción.",
+                    "hi": f"💳 मुफ्त परीक्षण उपयोग किया।\n\nबैलेंस: {bal:,} UZS\nअगला: 3,000 UZS\n\n💰 बैलेंस भरें या 💎 सदस्यता खरीदें।",
+                }
+                return custom_pay.replace("{bal}", f"{bal:,}") if custom_pay else default_pay.get(lang, default_pay["en"])
+
+            # ---- Rasm yaratish: faqat Premium ----
+            if func == "image":
+                if tariff != "premium":
+                    await callback.answer(PREMIUM_ONLY_MSG.get(lang, PREMIUM_ONLY_MSG["en"]), show_alert=True)
                     return
-                # Bepul foydalanish tekshirish
-                from database import has_free_usage, mark_free_usage
-                tariff = check_subscription(uid)
+                allowed, _ = can_use_ai(uid, "image")
+                if not allowed:
+                    await callback.answer(LIMIT_MSG.get(lang, LIMIT_MSG["en"]), show_alert=True)
+                    return
+                await state.set_state(AIS.waiting_input)
+                await state.update_data(func="image", lang=lang, tariff=tariff)
+                await callback.message.edit_text(
+                    PROMPT_MSG["image"].get(lang, PROMPT_MSG["image"]["en"]),
+                    reply_markup=back_to_ai_kb(lang)
+                )
+                return
 
-                if tariff == "free":
-                    from database import has_free_usage, mark_free_usage, has_enough_balance, deduct_balance
-                    if not has_free_usage(uid, func):
-                        # Birinchi marta bepul
-                        mark_free_usage(uid, func)
-                    elif has_enough_balance(uid, 3000):
-                        # Balansdan yechish
-                        deduct_balance(uid, 3000)
-                    else:
-                        # Balans yetarli emas
-                        pay_msg = {
-                            "uz": "💳 Bu funksiyadan bepul foydalandingiz.\n\nBalansingiz: {bal} so'm\nKeyingi foydalanish: 3,000 so'm\n\n💰 Balansni to'ldiring yoki 💎 tarif sotib oling.",
-                            "en": "💳 You've used the free trial.\n\nBalance: {bal} UZS\nNext use: 3,000 UZS\n\n💰 Top up balance or 💎 buy subscription.",
-                            "ru": "💳 Вы использовали бесплатный период.\n\nБаланс: {bal} UZS\nСледующее: 3,000 UZS\n\n💰 Пополните баланс или 💎 купите подписку.",
-                            "ar": "💳 استخدمت الفترة المجانية.\n\nالرصيد: {bal} UZS\nالتالي: 3,000 UZS\n\n💰 اشحن الرصيد أو 💎 اشترِ اشتراكاً.",
-                            "tr": "💳 Ücretsiz denemeyi kullandınız.\n\nBakiye: {bal} UZS\nSonraki: 3,000 UZS\n\n💰 Bakiye yükleyin veya 💎 abonelik alın.",
-                            "es": "💳 Usaste la prueba gratuita.\n\nSaldo: {bal} UZS\nSiguiente: 3,000 UZS\n\n💰 Recarga o 💎 compra suscripción.",
-                            "hi": "💳 मुफ्त परीक्षण उपयोग किया।\n\nबैलेंस: {bal} UZS\nअगला: 3,000 UZS\n\n💰 बैलेंस भरें या 💎 सदस्यता खरीदें।",
-                        }
-                        from database import get_balance
-                        bal = get_balance(uid)
-                        await callback.answer(
-                            pay_msg.get(lang, pay_msg["en"]).replace("{bal}", str(bal)),
-                            show_alert=True
-                        )
-                        return
-
-            # Fayl konvertatsiya
+            # ---- Fayl konvertatsiya ----
             if func == "convert":
                 await state.set_state(AIS.waiting_file)
                 await state.update_data(func=func, lang=lang)
@@ -808,16 +819,31 @@ def register_ai_handlers(dp, bot):
                 )
                 return
 
-            # Boshqa funksiyalar
+            # ---- Boshqa funksiyalar: tarifga qarab cheklov ----
+            if tariff == "premium":
+                pass  # cheksiz
+            elif tariff == "standard":
+                allowed, _ = can_use_ai(uid, func)
+                if not allowed:
+                    await callback.answer(LIMIT_MSG.get(lang, LIMIT_MSG["en"]), show_alert=True)
+                    return
+            else:  # free
+                if not has_free_usage(uid, func):
+                    mark_free_usage(uid, func)
+                elif has_enough_balance(uid, 3000):
+                    deduct_balance(uid, 3000)
+                else:
+                    await callback.answer(pay_required_msg(), show_alert=True)
+                    return
+
             await state.set_state(AIS.waiting_input)
             await state.update_data(func=func, lang=lang, tariff=tariff)
             import sys
             main_module = sys.modules.get('__main__')
             sett = main_module.load_settings() if main_module and hasattr(main_module, 'load_settings') else {}
             custom_prompt = sett.get("custom_section_texts", {}).get(f"ai_prompt_{func}", {}).get(lang, "")
-            prompt_text = custom_prompt if custom_prompt else PROMPT_MSG.get(func, {}).get(lang,
-                                                                                           PROMPT_MSG.get(func, {}).get(
-                                                                                               "en", ""))
+            prompt_text = custom_prompt if custom_prompt else PROMPT_MSG.get(func, {}).get(
+                lang, PROMPT_MSG.get(func, {}).get("en", ""))
             await callback.message.edit_text(
                 prompt_text,
                 reply_markup=back_to_ai_kb(lang)
@@ -832,15 +858,10 @@ def register_ai_handlers(dp, bot):
             fmt = callback.data[9:]
             await state.set_state(AIS.waiting_file)
             await state.update_data(func="convert", fmt=fmt, lang=lang)
-            send_file_msg = PROMPT_MSG.get("convert", {}).get(lang, "")
-            import sys
-            main_module = sys.modules.get('__main__')
-            sett = main_module.load_settings() if main_module and hasattr(main_module, 'load_settings') else {}
-            custom_ai_title = sett.get("custom_section_texts", {}).get("ai_menu_title", {}).get(lang, "")
-            ai_title = custom_ai_title if custom_ai_title else AI_MENU_TITLE.get(lang, AI_MENU_TITLE["en"])
+            send_file_msg = PROMPT_MSG.get("convert", {}).get(lang, PROMPT_MSG["convert"]["en"])
             await callback.message.edit_text(
-                ai_title,
-                reply_markup=ai_menu_kb(lang)
+                send_file_msg,
+                reply_markup=back_to_ai_kb(lang)
             )
         # ---- FAYL QABUL QILISH (KONVERT) ----
         @dp.message(AIS.waiting_file)
@@ -907,6 +928,33 @@ def register_ai_handlers(dp, bot):
                 await message.answer(PROMPT_MSG.get(func, {}).get(lang, ""))
                 return
 
+            # ---- Rasm yaratish (DALL-E) ----
+            if func == "image":
+                thinking = await message.answer(THINKING_MSG.get(lang, "⏳"))
+                try:
+                    url = await generate_image(text)
+                    await thinking.delete()
+                    log_ai_request(uid)
+                    await state.clear()
+                    done = {
+                        "uz": "🖼 Rasm tayyor!", "en": "🖼 Image ready!",
+                        "ru": "🖼 Изображение готово!", "ar": "🖼 الصورة جاهزة!",
+                        "tr": "🖼 Görsel hazır!", "es": "🖼 ¡Imagen lista!",
+                        "hi": "🖼 छवि तैयार!",
+                    }
+                    await message.answer_photo(url, caption=done.get(lang, done["en"]))
+                    await message.answer(done.get(lang, done["en"]), reply_markup=back_to_ai_kb(lang))
+                except Exception:
+                    await thinking.delete()
+                    err = {
+                        "uz": "❌ Rasm yaratishda xatolik.", "en": "❌ Image generation error.",
+                        "ru": "❌ Ошибка генерации изображения.", "ar": "❌ خطأ في توليد الصورة.",
+                        "tr": "❌ Görsel oluşturma hatası.", "es": "❌ Error al generar imagen.",
+                        "hi": "❌ छवि निर्माण त्रुटि।",
+                    }
+                    await message.answer(err.get(lang, err["en"]), reply_markup=back_to_ai_kb(lang))
+                return
+
             thinking = await message.answer(THINKING_MSG.get(lang, "⏳"))
 
             try:
@@ -961,100 +1009,5 @@ def register_ai_handlers(dp, bot):
                     "tr": "❌ Bir hata oluştu. Tekrar deneyin.",
                     "es": "❌ Ocurrió un error. Inténtalo de nuevo.",
                     "hi": "❌ एक त्रुटि हुई। फिर से प्रयास करें।",
-                }
-                await message.answer(err.get(lang, err["en"]))
-
-        # ---- RASM YARATISH ----
-        @dp.callback_query(F.data == "ai_image")
-        async def cb_ai_image(callback: types.CallbackQuery, state: FSMContext):
-            uid = callback.from_user.id
-            user = get_user(uid)
-            lang = user.get("lang", "en")
-            tariff = check_subscription(uid)
-
-            if tariff != "premium":
-                await callback.answer(
-                    PREMIUM_ONLY_MSG.get(lang, PREMIUM_ONLY_MSG["en"]),
-                    show_alert=True
-                )
-                return
-
-            allowed, _ = can_use_ai(uid, "image")
-            if not allowed:
-                await callback.answer(
-                    LIMIT_MSG.get(lang, LIMIT_MSG["en"]),
-                    show_alert=True
-                )
-                return
-
-            await state.set_state(AIS.waiting_input)
-            await state.update_data(func="image", lang=lang, tariff=tariff)
-            await callback.message.edit_text(
-                PROMPT_MSG["image"].get(lang, PROMPT_MSG["image"]["en"]),
-                reply_markup=back_to_ai_kb(lang)
-            )
-
-        # ---- RASM GENERATSIYA ----
-        async def generate_image(prompt):
-            async with aiohttp.ClientSession() as session:
-                async with session.post(
-                        DALLE_URL,
-                        headers={
-                            "Authorization": f"Bearer {OPENAI_API}",
-                            "Content-Type": "application/json"
-                        },
-                        json={
-                            "model": "dall-e-3",
-                            "prompt": prompt,
-                            "n": 1,
-                            "size": "1024x1024",
-                            "quality": "standard"
-                        }
-                ) as r:
-                    data = await r.json()
-            return data["data"][0]["url"]
-
-        # waiting_input holatida rasm so'rovi
-        original_handle = handle_ai_input
-
-        @dp.message(AIS.waiting_input)
-        async def handle_ai_input_image(message: types.Message, state: FSMContext):
-            uid = message.from_user.id
-            data = await state.get_data()
-            func = data.get("func", "chat")
-            lang = data.get("lang", "en")
-
-            if func != "image":
-                await original_handle(message, state)
-                return
-
-            text = message.text or ""
-            thinking = await message.answer(THINKING_MSG.get(lang, "⏳"))
-
-            try:
-                url = await generate_image(text)
-                await thinking.delete()
-                log_ai_request(uid)
-                await state.clear()
-                done = {
-                    "uz": "🖼 Rasm tayyor!",
-                    "en": "🖼 Image ready!",
-                    "ru": "🖼 Изображение готово!",
-                    "ar": "🖼 الصورة جاهزة!",
-                    "tr": "🖼 Görsel hazır!",
-                    "es": "🖼 ¡Imagen lista!",
-                    "hi": "🖼 छवि तैयार!",
-                }
-                await message.answer_photo(url, caption=done.get(lang, done["en"]))
-            except Exception:
-                await thinking.delete()
-                err = {
-                    "uz": "❌ Rasm yaratishda xatolik.",
-                    "en": "❌ Image generation error.",
-                    "ru": "❌ Ошибка генерации изображения.",
-                    "ar": "❌ خطأ في توليد الصورة.",
-                    "tr": "❌ Görsel oluşturma hatası.",
-                    "es": "❌ Error al generar imagen.",
-                    "hi": "❌ छवि निर्माण त्रुटि।",
                 }
                 await message.answer(err.get(lang, err["en"]))

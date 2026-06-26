@@ -1,0 +1,14 @@
+# Maxfiy / runtime fayllar
+.env
+*.db
+*.sqlite
+user_data.json
+bot_settings.json
+migration_done.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
